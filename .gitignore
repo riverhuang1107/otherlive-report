@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+~$*.xlsx
+otherlive-线路汇总.xlsx
+otherlive-线路汇总.csv
+reports/
