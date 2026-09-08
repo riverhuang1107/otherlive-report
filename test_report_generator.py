@@ -1,7 +1,7 @@
 import csv
 import tempfile
 import unittest
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import report_generator
@@ -111,6 +111,25 @@ class ReportGeneratorTest(unittest.TestCase):
             sum(row["active_line_count"] for row in monthly),
             summary["active_line_count"],
         )
+
+        active_bandwidth = report_generator.monthly_active_bandwidth_metrics(lines, as_of)
+        self.assertEqual(
+            active_bandwidth[0]["month"],
+            min(line.start_date for line in lines).strftime("%Y-%m"),
+        )
+        self.assertEqual(active_bandwidth[-1]["month"], as_of.strftime("%Y-%m"))
+        for row in active_bandwidth:
+            month_start = date.fromisoformat(f'{row["month"]}-01')
+            natural_month_end = report_generator.add_months(month_start, 1) - timedelta(days=1)
+            snapshot_date = min(natural_month_end, as_of)
+            self.assertEqual(
+                row["active_bandwidth"],
+                sum(
+                    line.bandwidth
+                    for line in lines
+                    if line.start_date <= snapshot_date <= line.end_date
+                ),
+            )
 
         monthly_sales = report_generator.service_monthly_sales_metrics(lines)
         self.assertAlmostEqual(
@@ -238,12 +257,27 @@ class ReportGeneratorTest(unittest.TestCase):
             self.assertIn("未来6个月月销预测", markdown)
             self.assertIn("2027-02", markdown)
             self.assertNotIn("2027-03", markdown)
-            monthly_section = markdown[markdown.index("## 五、月销金额分析") : markdown.index("## 六、未来6个月月销预测")]
+            monthly_section = markdown[
+                markdown.index("## 六、月销金额分析") : markdown.index(
+                    "## 七、未来6个月月销预测"
+                )
+            ]
             self.assertIn("2026-08", monthly_section)
             self.assertNotIn("2026-09", monthly_section)
             self.assertNotIn("2027-", monthly_section)
             self.assertNotIn("预计实际收入", markdown)
             self.assertIn("class=\"creation-bars\"", html)
+            self.assertIn("## 四、每月在售总带宽", markdown)
+            self.assertLess(
+                markdown.index("## 三、7 天内到期线路提醒"),
+                markdown.index("## 四、每月在售总带宽"),
+            )
+            self.assertLess(
+                markdown.index("## 四、每月在售总带宽"),
+                markdown.index("## 五、按创建时间的月度新增"),
+            )
+            self.assertIn("class=\"active-bandwidth-bars\"", html)
+            self.assertIn("每月在售总带宽柱状图", html)
             self.assertIn("线路状态汇总", html)
             self.assertIn("在售总带宽", html)
             self.assertIn("实际收入（结算价格）", html)
@@ -259,10 +293,10 @@ class ReportGeneratorTest(unittest.TestCase):
             self.assertIn("UC 平台地域分析", html)
             self.assertIn("上海-台北", html)
             uc_markdown_section = markdown[
-                markdown.index("### UC 平台地域分析") : markdown.index("## 八、地域/产品结构分析")
+                markdown.index("### UC 平台地域分析") : markdown.index("## 九、地域/产品结构分析")
             ]
             uc_html_section = html[
-                html.index("UC 平台地域分析") : html.index("八、地域/产品结构分析")
+                html.index("UC 平台地域分析") : html.index("九、地域/产品结构分析")
             ]
             self.assertNotIn("毛利率", uc_markdown_section)
             self.assertNotIn("毛利率", uc_html_section)
