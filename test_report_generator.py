@@ -122,12 +122,34 @@ class ReportGeneratorTest(unittest.TestCase):
             month_start = date.fromisoformat(f'{row["month"]}-01')
             natural_month_end = report_generator.add_months(month_start, 1) - timedelta(days=1)
             snapshot_date = min(natural_month_end, as_of)
+            expected_active_lines = [
+                line
+                for line in lines
+                if line.start_date <= snapshot_date <= line.end_date
+            ]
+            self.assertEqual(row["active_line_count"], len(expected_active_lines))
             self.assertEqual(
                 row["active_bandwidth"],
+                sum(line.bandwidth for line in expected_active_lines),
+            )
+
+        reclaimed = report_generator.monthly_reclaimed_metrics(lines, as_of)
+        expected_reclaimed_lines = [line for line in lines if line.end_date < as_of]
+        self.assertEqual(
+            sum(row["reclaimed_line_count"] for row in reclaimed),
+            len(expected_reclaimed_lines),
+        )
+        self.assertEqual(
+            sum(row["reclaimed_bandwidth"] for row in reclaimed),
+            sum(line.bandwidth for line in expected_reclaimed_lines),
+        )
+        self.assertEqual(reclaimed[-1]["month"], as_of.strftime("%Y-%m"))
+        for row in reclaimed:
+            self.assertEqual(
+                row["reclaimed_line_count"],
                 sum(
-                    line.bandwidth
-                    for line in lines
-                    if line.start_date <= snapshot_date <= line.end_date
+                    line.end_date.strftime("%Y-%m") == row["month"]
+                    for line in expected_reclaimed_lines
                 ),
             )
 
@@ -258,8 +280,8 @@ class ReportGeneratorTest(unittest.TestCase):
             self.assertIn("2027-02", markdown)
             self.assertNotIn("2027-03", markdown)
             monthly_section = markdown[
-                markdown.index("## 六、月销金额分析") : markdown.index(
-                    "## 七、未来6个月月销预测"
+                markdown.index("## 七、月销金额分析") : markdown.index(
+                    "## 八、未来6个月月销预测"
                 )
             ]
             self.assertIn("2026-08", monthly_section)
@@ -267,17 +289,38 @@ class ReportGeneratorTest(unittest.TestCase):
             self.assertNotIn("2027-", monthly_section)
             self.assertNotIn("预计实际收入", markdown)
             self.assertIn("class=\"creation-bars\"", html)
-            self.assertIn("## 四、每月在售总带宽", markdown)
+            self.assertIn("## 四、每月在售统计", markdown)
             self.assertLess(
                 markdown.index("## 三、7 天内到期线路提醒"),
-                markdown.index("## 四、每月在售总带宽"),
+                markdown.index("## 四、每月在售统计"),
             )
             self.assertLess(
-                markdown.index("## 四、每月在售总带宽"),
-                markdown.index("## 五、按创建时间的月度新增"),
+                markdown.index("## 四、每月在售统计"),
+                markdown.index("## 五、每月回收线路统计"),
             )
-            self.assertIn("class=\"active-bandwidth-bars\"", html)
-            self.assertIn("每月在售总带宽柱状图", html)
+            self.assertLess(
+                markdown.index("## 五、每月回收线路统计"),
+                markdown.index("## 六、按创建时间的月度新增"),
+            )
+            self.assertIn("每月在售线路数量", markdown)
+            self.assertIn("在售线路数", markdown)
+            self.assertIn("class=\"active-statistics-bars\"", html)
+            self.assertIn("每月在售线路数量和总带宽柱状图", html)
+            self.assertIn("每月回收线路数量", markdown)
+            self.assertIn("回收带宽（Mbps）", markdown)
+            self.assertIn("class=\"reclaimed-statistics-bars\"", html)
+            self.assertIn("每月回收线路数量和回收带宽柱状图", html)
+            self.assertIn("按创建月份的已回收线路明细", markdown)
+            reclaimed_detail_section = markdown[
+                markdown.index("### 按创建月份的已回收线路明细") : markdown.index(
+                    "## 七、月销金额分析"
+                )
+            ]
+            for line in lines:
+                if line.end_date < date(2026, 8, 11):
+                    self.assertIn(line.line_id, reclaimed_detail_section)
+                    self.assertIn(line.name, reclaimed_detail_section)
+            self.assertIn('class="reclaimed-creation-detail"', html)
             self.assertIn("线路状态汇总", html)
             self.assertIn("在售总带宽", html)
             self.assertIn("实际收入（结算价格）", html)
@@ -293,10 +336,10 @@ class ReportGeneratorTest(unittest.TestCase):
             self.assertIn("UC 平台地域分析", html)
             self.assertIn("上海-台北", html)
             uc_markdown_section = markdown[
-                markdown.index("### UC 平台地域分析") : markdown.index("## 九、地域/产品结构分析")
+                markdown.index("### UC 平台地域分析") : markdown.index("## 十、地域/产品结构分析")
             ]
             uc_html_section = html[
-                html.index("UC 平台地域分析") : html.index("九、地域/产品结构分析")
+                html.index("UC 平台地域分析") : html.index("十、地域/产品结构分析")
             ]
             self.assertNotIn("毛利率", uc_markdown_section)
             self.assertNotIn("毛利率", uc_html_section)

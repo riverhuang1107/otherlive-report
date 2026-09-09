@@ -591,10 +591,40 @@ def monthly_active_bandwidth_metrics(
         rows.append(
             {
                 "month": month_start.strftime("%Y-%m"),
+                "active_line_count": len(active_lines),
                 "active_bandwidth": total(active_lines, "bandwidth"),
             }
         )
         month_start = add_months(month_start, 1)
+    return rows
+
+
+def monthly_reclaimed_metrics(lines: list[Line], as_of: date) -> list[dict[str, Any]]:
+    """Aggregate reclaimed line count and bandwidth by end-date month."""
+
+    reclaimed_lines = [line for line in lines if line.end_date < as_of]
+    if not reclaimed_lines:
+        return []
+
+    first_month = min(line.end_date for line in reclaimed_lines).replace(day=1)
+    last_month = as_of.replace(day=1)
+    rows: list[dict[str, Any]] = []
+    month_start = first_month
+    while month_start <= last_month:
+        next_month = add_months(month_start, 1)
+        items = [
+            line
+            for line in reclaimed_lines
+            if month_start <= line.end_date < next_month
+        ]
+        rows.append(
+            {
+                "month": month_start.strftime("%Y-%m"),
+                "reclaimed_line_count": len(items),
+                "reclaimed_bandwidth": total(items, "bandwidth"),
+            }
+        )
+        month_start = next_month
     return rows
 
 
@@ -859,52 +889,74 @@ def creation_bar_svg(monthly_rows: list[dict[str, Any]]) -> str:
     return "".join(svg)
 
 
-def active_bandwidth_bar_svg(monthly_rows: list[dict[str, Any]]) -> str:
-    """Render monthly active bandwidth as a single-series bar chart."""
+def active_bandwidth_bar_svg(
+    monthly_rows: list[dict[str, Any]],
+    *,
+    count_key: str = "active_line_count",
+    bandwidth_key: str = "active_bandwidth",
+    chart_class: str = "active-statistics-bars",
+    chart_title: str = "每月在售线路数量和总带宽",
+    aria_label: str = "每月在售线路数量和总带宽柱状图",
+    empty_text: str = "暂无月度在售数据。",
+    count_legend: str = "在售线路数",
+    bandwidth_legend: str = "在售总带宽（Mbps）",
+) -> str:
+    """Render monthly line count and bandwidth as grouped bars."""
 
     if not monthly_rows:
-        return '<p class="muted">暂无月度在售带宽数据。</p>'
+        return f'<p class="muted">{html.escape(empty_text)}</p>'
 
     width, height = 860, 390
-    left, right, top, bottom = 72, 36, 58, 70
+    left, right, top, bottom = 62, 66, 58, 70
     plot_width = width - left - right
     plot_height = height - top - bottom
-    max_value = max(1, max(row["active_bandwidth"] for row in monthly_rows))
-    axis_max = max(10, math.ceil(max_value / 10) * 10)
+    max_count = max(1, max(row[count_key] for row in monthly_rows))
+    max_bandwidth = max(1, max(row[bandwidth_key] for row in monthly_rows))
+    count_axis_max = max(1, math.ceil(max_count / 5) * 5)
+    bandwidth_axis_max = max(10, math.ceil(max_bandwidth / 10) * 10)
     group_width = plot_width / len(monthly_rows)
-    bar_width = min(38, max(12, group_width * 0.5))
-    color = "#2b75b3"
+    bar_width = min(24, max(12, group_width * 0.22))
+    count_color = "#2b75b3"
+    bandwidth_color = "#f59e0b"
     svg: list[str] = [
-        f'<svg class="active-bandwidth-bars" viewBox="0 0 {width} {height}" role="img" '
-        'aria-label="每月在售总带宽柱状图">',
-        "<title>每月在售总带宽</title>",
-        f'<text x="{left}" y="24" class="chart-axis-title">带宽（Mbps）</text>',
+        f'<svg class="{html.escape(chart_class)}" viewBox="0 0 {width} {height}" role="img" '
+        f'aria-label="{html.escape(aria_label)}">',
+        f"<title>{html.escape(chart_title)}</title>",
+        f'<text x="{left}" y="24" class="chart-axis-title">线路数（左轴）</text>',
+        f'<text x="{width - right}" y="24" text-anchor="end" class="chart-axis-title">带宽 Mbps（右轴）</text>',
     ]
     for tick in range(0, 5):
         fraction = tick / 4
         y = top + plot_height - fraction * plot_height
-        value = axis_max * fraction
+        count_value = count_axis_max * fraction
+        bandwidth_value = bandwidth_axis_max * fraction
         svg.append(
             f'<line x1="{left}" y1="{y:.2f}" x2="{width - right}" y2="{y:.2f}" class="chart-gridline"/>'
-            f'<text x="{left - 10}" y="{y + 4:.2f}" text-anchor="end" class="chart-tick">{fmt_number(value)}</text>'
+            f'<text x="{left - 10}" y="{y + 4:.2f}" text-anchor="end" class="chart-tick">{fmt_number(count_value)}</text>'
+            f'<text x="{width - right + 10}" y="{y + 4:.2f}" class="chart-tick">{fmt_number(bandwidth_value)}</text>'
         )
     for index, row in enumerate(monthly_rows):
         center_x = left + group_width * (index + 0.5)
-        value = row["active_bandwidth"]
-        bar_height = value / axis_max * plot_height
-        x = center_x - bar_width / 2
-        y = top + plot_height - bar_height
+        count_height = row[count_key] / count_axis_max * plot_height
+        bandwidth_height = row[bandwidth_key] / bandwidth_axis_max * plot_height
+        count_x = center_x - bar_width - 3
+        bandwidth_x = center_x + 3
+        count_y = top + plot_height - count_height
+        bandwidth_y = top + plot_height - bandwidth_height
         svg.extend(
             [
-                f'<rect x="{x:.2f}" y="{y:.2f}" width="{bar_width:.2f}" height="{bar_height:.2f}" rx="3" fill="{color}"/>',
-                f'<text x="{center_x:.2f}" y="{max(top + 14, y - 7):.2f}" text-anchor="middle" class="chart-value">{fmt_number(value)}</text>',
+                f'<rect x="{count_x:.2f}" y="{count_y:.2f}" width="{bar_width:.2f}" height="{count_height:.2f}" rx="3" fill="{count_color}"/>',
+                f'<rect x="{bandwidth_x:.2f}" y="{bandwidth_y:.2f}" width="{bar_width:.2f}" height="{bandwidth_height:.2f}" rx="3" fill="{bandwidth_color}"/>',
+                f'<text x="{count_x + bar_width / 2:.2f}" y="{max(top + 14, count_y - 7):.2f}" text-anchor="middle" class="chart-value">{row[count_key]}</text>',
+                f'<text x="{bandwidth_x + bar_width / 2:.2f}" y="{max(top + 14, bandwidth_y - 7):.2f}" text-anchor="middle" class="chart-value">{fmt_number(row[bandwidth_key])}</text>',
                 f'<text x="{center_x:.2f}" y="{height - bottom + 25}" text-anchor="middle" class="chart-month">{html.escape(row["month"])}</text>',
             ]
         )
     legend_y = height - 20
     svg.extend(
         [
-            f'<rect x="{left}" y="{legend_y - 12}" width="14" height="14" rx="3" fill="{color}"/><text x="{left + 22}" y="{legend_y}" class="chart-legend">在售总带宽（Mbps）</text>',
+            f'<rect x="{left}" y="{legend_y - 12}" width="14" height="14" rx="3" fill="{count_color}"/><text x="{left + 22}" y="{legend_y}" class="chart-legend">{html.escape(count_legend)}</text>',
+            f'<rect x="{left + 150}" y="{legend_y - 12}" width="14" height="14" rx="3" fill="{bandwidth_color}"/><text x="{left + 172}" y="{legend_y}" class="chart-legend">{html.escape(bandwidth_legend)}</text>',
             "</svg>",
         ]
     )
@@ -996,6 +1048,7 @@ def render_report(
     platform_rows: list[dict[str, Any]],
     monthly_rows: list[dict[str, Any]],
     active_bandwidth_rows: list[dict[str, Any]],
+    reclaimed_rows: list[dict[str, Any]],
     monthly_sales_rows: list[dict[str, Any]],
     forecast_rows: list[dict[str, Any]],
     region_rows: list[dict[str, Any]],
@@ -1142,9 +1195,40 @@ def render_report(
         ]
         for row in monthly_rows
     ]
+    reclaimed_creation_detail_rows = [
+        [
+            line.create_date.strftime("%Y-%m"),
+            line.line_id,
+            line.name,
+            line.platform,
+            line.region,
+            fmt_number(line.bandwidth),
+            fmt_date(line.create_date),
+            fmt_date(line.start_date),
+            fmt_date(line.end_date),
+            fmt_money(line.sales_total, 0),
+            fmt_money(line.settlement_total, 0),
+        ]
+        for line in sorted(
+            (line for line in lines if line.end_date < as_of),
+            key=lambda line: (line.create_date, line.end_date, line.line_id),
+        )
+    ]
     active_bandwidth_table_rows = [
-        [row["month"], fmt_number(row["active_bandwidth"])]
+        [
+            row["month"],
+            str(row["active_line_count"]),
+            fmt_number(row["active_bandwidth"]),
+        ]
         for row in active_bandwidth_rows
+    ]
+    reclaimed_table_rows = [
+        [
+            row["month"],
+            str(row["reclaimed_line_count"]),
+            fmt_number(row["reclaimed_bandwidth"]),
+        ]
+        for row in reclaimed_rows
     ]
     monthly_sales_table_rows = [
         [
@@ -1198,6 +1282,17 @@ def render_report(
     ]
     platform_pie = platform_pie_svg(platform_rows)
     active_bandwidth_bar = active_bandwidth_bar_svg(active_bandwidth_rows)
+    reclaimed_bar = active_bandwidth_bar_svg(
+        reclaimed_rows,
+        count_key="reclaimed_line_count",
+        bandwidth_key="reclaimed_bandwidth",
+        chart_class="reclaimed-statistics-bars",
+        chart_title="每月回收线路数量和回收带宽",
+        aria_label="每月回收线路数量和回收带宽柱状图",
+        empty_text="暂无月度回收数据。",
+        count_legend="回收线路数",
+        bandwidth_legend="回收带宽（Mbps）",
+    )
     creation_bar = creation_bar_svg(monthly_rows)
     monthly_sales_bar = monthly_sales_bar_svg(monthly_sales_rows)
     forecast_sales_bar = monthly_sales_bar_svg(
@@ -1209,13 +1304,39 @@ def render_report(
     active_bandwidth_months = ", ".join(
         f'"{row["month"]}"' for row in active_bandwidth_rows
     )
-    mermaid_active_bandwidth_chart = [
+    mermaid_active_statistics_charts = [
+        "```mermaid",
+        "xychart-beta",
+        "    title \"每月在售线路数量\"",
+        f"    x-axis [{active_bandwidth_months}]",
+        f"    y-axis \"线路数\" 0 --> {max((row['active_line_count'] for row in active_bandwidth_rows), default=0)}",
+        f"    bar [{', '.join(str(row['active_line_count']) for row in active_bandwidth_rows)}]",
+        "```",
+        "",
         "```mermaid",
         "xychart-beta",
         "    title \"每月在售总带宽\"",
         f"    x-axis [{active_bandwidth_months}]",
         f"    y-axis \"Mbps\" 0 --> {max((row['active_bandwidth'] for row in active_bandwidth_rows), default=0):g}",
         f"    bar [{', '.join(format(row['active_bandwidth'], 'g') for row in active_bandwidth_rows)}]",
+        "```",
+    ]
+    reclaimed_months = ", ".join(f'"{row["month"]}"' for row in reclaimed_rows)
+    mermaid_reclaimed_charts = [
+        "```mermaid",
+        "xychart-beta",
+        "    title \"每月回收线路数量\"",
+        f"    x-axis [{reclaimed_months}]",
+        f"    y-axis \"线路数\" 0 --> {max((row['reclaimed_line_count'] for row in reclaimed_rows), default=0)}",
+        f"    bar [{', '.join(str(row['reclaimed_line_count']) for row in reclaimed_rows)}]",
+        "```",
+        "",
+        "```mermaid",
+        "xychart-beta",
+        "    title \"每月回收带宽\"",
+        f"    x-axis [{reclaimed_months}]",
+        f"    y-axis \"Mbps\" 0 --> {max((row['reclaimed_bandwidth'] for row in reclaimed_rows), default=0):g}",
+        f"    bar [{', '.join(format(row['reclaimed_bandwidth'], 'g') for row in reclaimed_rows)}]",
         "```",
     ]
     mermaid_months = ", ".join(f'"{row["month"]}"' for row in monthly_rows)
@@ -1320,18 +1441,31 @@ def render_report(
         if expiry_rows
         else "暂无 7 天内到期线路。",
         "",
-        "## 四、每月在售总带宽",
+        "## 四、每月在售统计",
         "",
-        "按月末快照统计每个自然月的在售总带宽，当前月以统计基准日作为快照日期。快照日处于线路开始至结束日期（含边界）时计入。",
+        "按月末快照统计每个自然月的在售线路数量和在售总带宽，当前月以统计基准日作为快照日期。快照日处于线路开始至结束日期（含边界）时计入。",
         "",
-        *mermaid_active_bandwidth_chart,
+        *mermaid_active_statistics_charts,
         "",
         markdown_table(
-            ["月份", "在售总带宽（Mbps）"],
+            ["月份", "在售线路数", "在售总带宽（Mbps）"],
             active_bandwidth_table_rows,
         ),
         "",
-        "## 五、按创建时间的月度新增",
+        "## 五、每月回收线路统计",
+        "",
+        "按线路结束日期所在月份统计每月回收线路数量和回收带宽；仅统计结束日期早于统计基准日的线路。",
+        "",
+        *(mermaid_reclaimed_charts if reclaimed_rows else []),
+        "",
+        markdown_table(
+            ["月份", "回收线路数", "回收带宽（Mbps）"],
+            reclaimed_table_rows,
+        )
+        if reclaimed_table_rows
+        else "暂无已回收线路。",
+        "",
+        "## 六、按创建时间的月度新增",
         "",
         "按线路创建时间统计每月新创建的线路数量和新增带宽量；新增带宽为该月创建线路带宽之和。",
         "",
@@ -1342,7 +1476,18 @@ def render_report(
             monthly_table_rows,
         ),
         "",
-        "## 六、月销金额分析",
+        "### 按创建月份的已回收线路明细",
+        "",
+        "用于对应上表“其中已回收线路”数据，按创建月份、结束日期和线路 ID 排序。",
+        "",
+        markdown_table(
+            ["创建月份", "专线ID", "线路名称", "平台", "地域", "带宽 Mbps", "创建日期", "开始日期", "结束日期", "合同销售额", "实际收入"],
+            reclaimed_creation_detail_rows,
+        )
+        if reclaimed_creation_detail_rows
+        else "暂无已回收线路。",
+        "",
+        "## 七、月销金额分析",
         "",
         "按线路开始时间所在月份作为第一个服务月，按合同月数逐月展开并汇总全量历史线路；合同月销 = 销售价格 ÷ 时长（月），结算月销 = 结算价格 ÷ 时长（月），不足整月按实际月数比例计入。",
         "",
@@ -1353,7 +1498,7 @@ def render_report(
             monthly_sales_table_rows,
         ),
         "",
-        "## 七、未来6个月月销预测",
+        "## 八、未来6个月月销预测",
         "",
         f"预测区间为统计基准日 {fmt_date(as_of)} 后的 6 个自然月，基于当前在用的 {summary['active_line_count']} 条线路；假设线路到期后均按当前付款周期续约，合同金额和结算金额均按当前月销水平延续。",
         "",
@@ -1364,7 +1509,7 @@ def render_report(
             forecast_table_rows,
         ),
         "",
-        "## 八、线路平台分析",
+        "## 九、线路平台分析",
         "",
         *mermaid_platform_pie,
         "",
@@ -1384,21 +1529,21 @@ def render_report(
         if uc_region_table_rows
         else "暂无 UC 平台地域数据。",
         "",
-        "## 九、地域/产品结构分析",
+        "## 十、地域/产品结构分析",
         "",
         markdown_table(
             ["地域", "全量线路数", "全量带宽（Mbps）", "带宽占比", "在售线路数", "在售带宽（Mbps）", "已回收线路数", "已回收带宽（Mbps）", "销售额", "销售额占比", "实际收入（结算价格）", "实际收入占比", "毛利率"],
             region_table_rows,
         ),
         "",
-        "## 十、付款周期分析",
+        "## 十一、付款周期分析",
         "",
         markdown_table(
             ["付款周期", "全量线路数", "线路数占比", "全量带宽（Mbps）", "带宽占比", "在售线路数", "在售带宽（Mbps）", "已回收线路数", "已回收带宽（Mbps）", "销售额", "销售额占比", "实际收入（结算价格）", "实际收入占比", "平均时长（月）"],
             payment_table_rows,
         ),
         "",
-        "## 十一、定价与利润风险",
+        "## 十二、定价与利润风险",
         "",
         markdown_table(
             ["专线ID", "线路名称", "状态", "平台", "带宽 Mbps", "销售单价", "成本单价", "实际收入（结算价格）", "合同毛利", "毛利率"],
@@ -1407,18 +1552,19 @@ def render_report(
         if risk_rows
         else "暂无毛利小于或等于 0 的线路。",
         "",
-        "## 十二、数据质量检查",
+        "## 十三、数据质量检查",
         "",
         *([f"- {issue}" for issue in issues] if issues else ["- 未发现必填字段、日期或基础数值异常。"]),
         f"- 已过期线路：{len(expired)} 条。",
         "",
-        "## 十三、口径说明",
+        "## 十四、口径说明",
         "",
         "- 金额按源表约定展示为人民币元；结算价格为公司实际收入，销售价格为合同销售额。",
         "- 总售出带宽为所有有效线路带宽之和；平台和地域占比均以总带宽为分母。",
         "- 加权平均销售单价 = Σ（带宽 × 销售单价）÷ Σ带宽。",
         "- 合同口径每 Mbps 月均销售价格 = 合同销售额 ÷ Σ（带宽 × 合同月数）。",
-        "- 每月在售总带宽采用月末快照口径，当前月以统计基准日作为快照日期；快照日尚未开始或已经结束的线路不计入。",
+        "- 每月在售线路数和在售总带宽采用月末快照口径，当前月以统计基准日作为快照日期；快照日尚未开始或已经结束的线路不计入。",
+        "- 每月回收线路统计按结束日期所在自然月聚合；仅统计结束日期早于统计基准日的线路，回收带宽为这些线路带宽之和。",
         "- 月销统计按服务月份展开：以开始时间所在月份作为第一个服务月，按时长（月）逐月计入；因此季度、半年、年付线路会在覆盖到的每个月计入合同月销和结算月销，不足整月按实际月数比例计入。",
         "- 未来 6 个月预测仅纳入统计基准日在用线路；线路结束后按付款周期（月、季度、半年、年）自动续约，合同月销和结算月销按当前月度折算金额延续。",
         "- 7 天内到期口径为结束日期落在统计基准日到基准日后 7 个自然日之间，包含边界日期。",
@@ -1485,10 +1631,12 @@ ul {{ margin-top: 8px; }}
 .pie-unit {{ fill: #ffffff; font-size: 13px; font-weight: 700; paint-order: stroke; stroke: #173b63; stroke-width: 2px; stroke-linejoin: round; }}
 .chart-wrap {{ display: grid; grid-template-columns: minmax(420px, 1fr) minmax(620px, 1.6fr); gap: 20px; align-items: center; }}
 .chart-card {{ min-width: 0; }}
-.active-bandwidth-bars, .creation-bars {{ width: 100%; min-width: 760px; height: auto; }}
+.active-statistics-bars, .reclaimed-statistics-bars, .creation-bars {{ width: 100%; min-width: 760px; height: auto; }}
 .monthly-sales-bars, .forecast-sales-bars {{ width: 100%; min-width: 760px; height: auto; }}
 .uc-region-table {{ min-width: 0; table-layout: fixed; font-size: 11px; }}
 .uc-region-table th, .uc-region-table td {{ padding: 7px 5px; white-space: normal; overflow-wrap: anywhere; word-break: break-word; }}
+.reclaimed-creation-detail {{ min-width: 0; table-layout: fixed; font-size: 11px; }}
+.reclaimed-creation-detail th, .reclaimed-creation-detail td {{ padding: 7px 5px; }}
 .chart-gridline {{ stroke: #dbe5ef; stroke-width: 1; }}
 .chart-axis-title, .chart-tick, .chart-value, .chart-month, .chart-legend {{ fill: #173b63; font-size: 13px; }}
 .chart-axis-title, .chart-legend {{ font-weight: 700; }}
@@ -1505,16 +1653,17 @@ ul {{ margin-top: 8px; }}
 <section class="panel"><h2>一、管理摘要</h2><ul>{html_observations}</ul></section>
 <section class="panel"><h2>二、线路状态汇总</h2><p>按统计基准日 {fmt_date(as_of)} 判断：结束时间早于统计基准日的线路为已回收，其余线路为在售。全量财务和历史新增统计均保留已回收线路数据。</p>{html_table(['线路状态','线路数','线路数占比','带宽 Mbps','带宽占比','销售额','销售额占比','实际收入（结算价格）','实际收入占比','合同毛利','毛利率'], status_table_rows)}</section>
 <section class="panel"><h2>三、7 天内到期线路提醒</h2><p>共 <strong>{len(expiring)} 条</strong>线路将在 7 天内到期，涉及 <strong>{fmt_number(total((line for line, _ in expiring), 'bandwidth') if expiring else 0)} Mbps</strong>、合同销售额 <strong>{fmt_money(total((line for line, _ in expiring), 'sales_total') if expiring else 0, 0)}</strong>、实际收入 <strong>{fmt_money(total((line for line, _ in expiring), 'settlement_total') if expiring else 0, 0)}</strong>。</p>{html_expiry}</section>
-<section class="panel"><h2>四、每月在售总带宽</h2><p>按月末快照统计每个自然月的在售总带宽，当前月以统计基准日作为快照日期。快照日处于线路开始至结束日期（含边界）时计入。</p>{active_bandwidth_bar}{html_table(['月份','在售总带宽（Mbps）'], active_bandwidth_table_rows)}</section>
-<section class="panel"><h2>五、按创建时间的月度新增</h2><p>按线路创建时间统计每月新创建的线路数量和新增带宽量；新增带宽为该月创建线路带宽之和，并拆分展示当前在售和已回收数据。</p>{creation_bar}{html_table(['创建月份','新增线路数','新增带宽（Mbps）','新增实际收入','其中在售线路','其中在售带宽（Mbps）','其中在售实际收入','其中已回收线路','其中已回收带宽（Mbps）','其中已回收实际收入'], monthly_table_rows)}</section>
-<section class="panel"><h2>六、月销金额分析</h2><p>按线路开始时间所在月份作为第一个服务月，按合同月数逐月展开并汇总全量历史线路；合同月销 = 销售价格 ÷ 时长（月），结算月销 = 结算价格 ÷ 时长（月），不足整月按实际月数比例计入。</p>{monthly_sales_bar}{html_table(['月份','合同月销','结算月销（实际收入）'], monthly_sales_table_rows)}</section>
-<section class="panel"><h2>七、未来6个月月销预测</h2><p>预测区间为统计基准日 {fmt_date(as_of)} 后的 6 个自然月，基于当前在用的 {summary['active_line_count']} 条线路；假设线路到期后均按当前付款周期续约，合同金额和结算金额均按当前月销水平延续。</p>{forecast_sales_bar}{html_table(['预测月份','合同月销','结算月销（实际收入）'], forecast_table_rows)}</section>
-<section class="panel"><h2>八、线路平台分析</h2><div class="chart-wrap"><div class="chart-card"><h3>平台售出带宽饼图</h3>{platform_pie}</div><div class="chart-card">{html_table(['平台','全量线路数','全量带宽（Mbps）','带宽占比','在售线路数','在售带宽（Mbps）','已回收线路数','已回收带宽（Mbps）','销售额','销售额占比','实际收入（结算价格）','实际收入占比','加权销售单价','毛利率'], platform_table_rows)}</div></div><h3>UC 平台地域分析</h3><p>以下占比均以 UC 平台自身汇总为分母，用于识别 UC 平台的地域线路数量、带宽和收入结构。</p>{html_table(['地域','线路数','线路数占比','带宽（Mbps）','带宽占比','在售线路数','在售带宽（Mbps）','已回收线路数','已回收带宽（Mbps）','合同销售额','销售额占比','实际收入（结算价格）','实际收入占比'], uc_region_table_rows, 'uc-region-table') if uc_region_table_rows else '<p class="muted">暂无 UC 平台地域数据。</p>'}</section>
-<section class="panel"><h2>九、地域/产品结构分析</h2>{html_table(['地域','全量线路数','全量带宽（Mbps）','带宽占比','在售线路数','在售带宽（Mbps）','已回收线路数','已回收带宽（Mbps）','销售额','销售额占比','实际收入（结算价格）','实际收入占比','毛利率'], region_table_rows)}</section>
-<section class="panel"><h2>十、付款周期分析</h2>{html_table(['付款周期','全量线路数','线路数占比','全量带宽（Mbps）','带宽占比','在售线路数','在售带宽（Mbps）','已回收线路数','已回收带宽（Mbps）','销售额','销售额占比','实际收入（结算价格）','实际收入占比','平均时长（月）'], payment_table_rows)}</section>
-<section class="panel"><h2>十一、定价与利润风险</h2>{html_risks}</section>
-<section class="panel"><h2>十二、数据质量检查</h2><ul>{html_issue}<li>已回收线路：{len(expired)} 条。</li></ul></section>
-<section class="panel"><h2>十三、口径说明</h2><ul><li>金额按源表约定展示为人民币元。</li><li>总售出带宽为所有有效线路带宽之和；平台和地域占比均以全量带宽为分母。</li><li>已回收线路定义为结束时间早于统计基准日的线路；全量财务和历史新增统计保留已回收线路数据。</li><li>加权平均销售单价 = Σ（带宽 × 销售单价）÷ Σ带宽。</li><li>合同口径每 Mbps 月均销售价格 = 合同销售额 ÷ Σ（带宽 × 合同月数）。</li><li>每月在售总带宽采用月末快照口径，当前月以统计基准日作为快照日期；快照日尚未开始或已经结束的线路不计入。</li><li>按线路创建时间按自然月聚合；新增带宽为该月新创建线路带宽之和。</li><li>月销统计按服务月份展开：以开始时间所在月份作为第一个服务月，按时长（月）逐月计入；因此季度、半年、年付线路会在覆盖到的每个月计入合同月销和结算月销，不足整月按实际月数比例计入。</li><li>未来 6 个月预测仅纳入统计基准日在用线路；线路结束后按付款周期（月、季度、半年、年）自动续约，合同月销和结算月销按当前月度折算金额延续。</li><li>7 天内到期口径为结束日期落在统计基准日到基准日后 7 个自然日之间，包含边界日期。</li></ul></section>
+<section class="panel"><h2>四、每月在售统计</h2><p>按月末快照统计每个自然月的在售线路数量和在售总带宽，当前月以统计基准日作为快照日期。快照日处于线路开始至结束日期（含边界）时计入。</p>{active_bandwidth_bar}{html_table(['月份','在售线路数','在售总带宽（Mbps）'], active_bandwidth_table_rows)}</section>
+<section class="panel"><h2>五、每月回收线路统计</h2><p>按线路结束日期所在月份统计每月回收线路数量和回收带宽；仅统计结束日期早于统计基准日的线路。</p>{reclaimed_bar}{html_table(['月份','回收线路数','回收带宽（Mbps）'], reclaimed_table_rows) if reclaimed_table_rows else '<p class="muted">暂无已回收线路。</p>'}</section>
+<section class="panel"><h2>六、按创建时间的月度新增</h2><p>按线路创建时间统计每月新创建的线路数量和新增带宽量；新增带宽为该月创建线路带宽之和，并拆分展示当前在售和已回收数据。</p>{creation_bar}{html_table(['创建月份','新增线路数','新增带宽（Mbps）','新增实际收入','其中在售线路','其中在售带宽（Mbps）','其中在售实际收入','其中已回收线路','其中已回收带宽（Mbps）','其中已回收实际收入'], monthly_table_rows)}<h3>按创建月份的已回收线路明细</h3><p>用于对应上表“其中已回收线路”数据，按创建月份、结束日期和线路 ID 排序。</p>{html_table(['创建月份','专线ID','线路名称','平台','地域','带宽 Mbps','创建日期','开始日期','结束日期','合同销售额','实际收入'], reclaimed_creation_detail_rows, 'reclaimed-creation-detail') if reclaimed_creation_detail_rows else '<p class="muted">暂无已回收线路。</p>'}</section>
+<section class="panel"><h2>七、月销金额分析</h2><p>按线路开始时间所在月份作为第一个服务月，按合同月数逐月展开并汇总全量历史线路；合同月销 = 销售价格 ÷ 时长（月），结算月销 = 结算价格 ÷ 时长（月），不足整月按实际月数比例计入。</p>{monthly_sales_bar}{html_table(['月份','合同月销','结算月销（实际收入）'], monthly_sales_table_rows)}</section>
+<section class="panel"><h2>八、未来6个月月销预测</h2><p>预测区间为统计基准日 {fmt_date(as_of)} 后的 6 个自然月，基于当前在用的 {summary['active_line_count']} 条线路；假设线路到期后均按当前付款周期续约，合同金额和结算金额均按当前月销水平延续。</p>{forecast_sales_bar}{html_table(['预测月份','合同月销','结算月销（实际收入）'], forecast_table_rows)}</section>
+<section class="panel"><h2>九、线路平台分析</h2><div class="chart-wrap"><div class="chart-card"><h3>平台售出带宽饼图</h3>{platform_pie}</div><div class="chart-card">{html_table(['平台','全量线路数','全量带宽（Mbps）','带宽占比','在售线路数','在售带宽（Mbps）','已回收线路数','已回收带宽（Mbps）','销售额','销售额占比','实际收入（结算价格）','实际收入占比','加权销售单价','毛利率'], platform_table_rows)}</div></div><h3>UC 平台地域分析</h3><p>以下占比均以 UC 平台自身汇总为分母，用于识别 UC 平台的地域线路数量、带宽和收入结构。</p>{html_table(['地域','线路数','线路数占比','带宽（Mbps）','带宽占比','在售线路数','在售带宽（Mbps）','已回收线路数','已回收带宽（Mbps）','合同销售额','销售额占比','实际收入（结算价格）','实际收入占比'], uc_region_table_rows, 'uc-region-table') if uc_region_table_rows else '<p class="muted">暂无 UC 平台地域数据。</p>'}</section>
+<section class="panel"><h2>十、地域/产品结构分析</h2>{html_table(['地域','全量线路数','全量带宽（Mbps）','带宽占比','在售线路数','在售带宽（Mbps）','已回收线路数','已回收带宽（Mbps）','销售额','销售额占比','实际收入（结算价格）','实际收入占比','毛利率'], region_table_rows)}</section>
+<section class="panel"><h2>十一、付款周期分析</h2>{html_table(['付款周期','全量线路数','线路数占比','全量带宽（Mbps）','带宽占比','在售线路数','在售带宽（Mbps）','已回收线路数','已回收带宽（Mbps）','销售额','销售额占比','实际收入（结算价格）','实际收入占比','平均时长（月）'], payment_table_rows)}</section>
+<section class="panel"><h2>十二、定价与利润风险</h2>{html_risks}</section>
+<section class="panel"><h2>十三、数据质量检查</h2><ul>{html_issue}<li>已回收线路：{len(expired)} 条。</li></ul></section>
+<section class="panel"><h2>十四、口径说明</h2><ul><li>金额按源表约定展示为人民币元。</li><li>总售出带宽为所有有效线路带宽之和；平台和地域占比均以全量带宽为分母。</li><li>已回收线路定义为结束时间早于统计基准日的线路；全量财务和历史新增统计保留已回收线路数据。</li><li>加权平均销售单价 = Σ（带宽 × 销售单价）÷ Σ带宽。</li><li>合同口径每 Mbps 月均销售价格 = 合同销售额 ÷ Σ（带宽 × 合同月数）。</li><li>每月在售线路数和在售总带宽采用月末快照口径，当前月以统计基准日作为快照日期；快照日尚未开始或已经结束的线路不计入。</li><li>每月回收线路统计按结束日期所在自然月聚合；仅统计结束日期早于统计基准日的线路，回收带宽为这些线路带宽之和。</li><li>按线路创建时间按自然月聚合；新增带宽为该月新创建线路带宽之和。</li><li>月销统计按服务月份展开：以开始时间所在月份作为第一个服务月，按时长（月）逐月计入；因此季度、半年、年付线路会在覆盖到的每个月计入合同月销和结算月销，不足整月按实际月数比例计入。</li><li>未来 6 个月预测仅纳入统计基准日在用线路；线路结束后按付款周期（月、季度、半年、年）自动续约，合同月销和结算月销按当前月度折算金额延续。</li><li>7 天内到期口径为结束日期落在统计基准日到基准日后 7 个自然日之间，包含边界日期。</li></ul></section>
 <div class="footer">由 report_generator.py 生成。</div>
 </main>
 </body>
@@ -1543,6 +1692,7 @@ def generate_report(
     platform_rows = group_metrics(lines, "platform", summary, report_date)
     monthly_rows = creation_metrics(lines, report_date)
     active_bandwidth_rows = monthly_active_bandwidth_metrics(lines, report_date)
+    reclaimed_rows = monthly_reclaimed_metrics(lines, report_date)
     monthly_sales_rows = service_monthly_sales_metrics(lines, through_date=report_date)
     forecast_rows = forecast_monthly_sales_metrics(lines, report_date, horizon=6)
     region_rows = group_metrics(lines, "region", summary, report_date)
@@ -1563,6 +1713,7 @@ def generate_report(
         platform_rows,
         monthly_rows,
         active_bandwidth_rows,
+        reclaimed_rows,
         monthly_sales_rows,
         forecast_rows,
         region_rows,
