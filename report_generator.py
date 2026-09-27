@@ -218,7 +218,11 @@ def load_lines(source_path: Path) -> tuple[list[Line], list[str]]:
         if not any(value not in (None, "") for value in values):
             continue
         row = dict(zip(headers, values))
-        missing = [field for field in REQUIRED_FIELDS if row.get(field) in (None, "")]
+        missing = [
+            field
+            for field in REQUIRED_FIELDS
+            if field != "时长（月）" and row.get(field) in (None, "")
+        ]
         if missing:
             issues.append(f"第 {row_number} 行缺少字段：{', '.join(missing)}")
             continue
@@ -234,13 +238,25 @@ def load_lines(source_path: Path) -> tuple[list[Line], list[str]]:
         term_months = as_number(row.get("时长（月）"))
         sale_unit_price = as_number(row.get("销售单价（Mb/月）"))
         cost_unit_price = as_number(row.get("成本价（Mb/月）"))
-        if None in (bandwidth, term_months, sale_unit_price, cost_unit_price):
+        if None in (bandwidth, sale_unit_price, cost_unit_price):
             issues.append(f"第 {row_number} 行数值字段无法解析")
             continue
         assert bandwidth is not None
-        assert term_months is not None
         assert sale_unit_price is not None
         assert cost_unit_price is not None
+        if term_months is None:
+            service_days = (end_date - start_date).days + 1
+            if service_days <= 0:
+                issues.append(
+                    f"第 {row_number} 行时长（月）为空，且结束时间不晚于开始时间，无法推导时长"
+                )
+                continue
+            term_months = service_days / 30
+            issues.append(
+                f"第 {row_number} 行时长（月）为空，已按开始/结束日期推导为 {term_months:.2f}"
+                f"（{service_days} 天 ÷ 30）"
+            )
+        assert term_months is not None
         if bandwidth <= 0:
             issues.append(f"第 {row_number} 行带宽不是正数：{bandwidth}")
         if term_months <= 0:
@@ -1567,6 +1583,7 @@ def render_report(
         "- 每月回收线路统计按结束日期所在自然月聚合；仅统计结束日期早于统计基准日的线路，回收带宽为这些线路带宽之和。",
         "- 月销统计按服务月份展开：以开始时间所在月份作为第一个服务月，按时长（月）逐月计入；因此季度、半年、年付线路会在覆盖到的每个月计入合同月销和结算月销，不足整月按实际月数比例计入。",
         "- 未来 6 个月预测仅纳入统计基准日在用线路；线路结束后按付款周期（月、季度、半年、年）自动续约，合同月销和结算月销按当前月度折算金额延续。",
+        "- 「时长（月）」缺失时按（结束日期 − 开始日期 + 1 天）÷ 30 推导合同月数，并记录在数据质量检查中。",
         "- 7 天内到期口径为结束日期落在统计基准日到基准日后 7 个自然日之间，包含边界日期。",
     ]
     markdown = "\n".join(md_parts)
@@ -1663,7 +1680,7 @@ ul {{ margin-top: 8px; }}
 <section class="panel"><h2>十一、付款周期分析</h2>{html_table(['付款周期','全量线路数','线路数占比','全量带宽（Mbps）','带宽占比','在售线路数','在售带宽（Mbps）','已回收线路数','已回收带宽（Mbps）','销售额','销售额占比','实际收入（结算价格）','实际收入占比','平均时长（月）'], payment_table_rows)}</section>
 <section class="panel"><h2>十二、定价与利润风险</h2>{html_risks}</section>
 <section class="panel"><h2>十三、数据质量检查</h2><ul>{html_issue}<li>已回收线路：{len(expired)} 条。</li></ul></section>
-<section class="panel"><h2>十四、口径说明</h2><ul><li>金额按源表约定展示为人民币元。</li><li>总售出带宽为所有有效线路带宽之和；平台和地域占比均以全量带宽为分母。</li><li>已回收线路定义为结束时间早于统计基准日的线路；全量财务和历史新增统计保留已回收线路数据。</li><li>加权平均销售单价 = Σ（带宽 × 销售单价）÷ Σ带宽。</li><li>合同口径每 Mbps 月均销售价格 = 合同销售额 ÷ Σ（带宽 × 合同月数）。</li><li>每月在售线路数和在售总带宽采用月末快照口径，当前月以统计基准日作为快照日期；快照日尚未开始或已经结束的线路不计入。</li><li>每月回收线路统计按结束日期所在自然月聚合；仅统计结束日期早于统计基准日的线路，回收带宽为这些线路带宽之和。</li><li>按线路创建时间按自然月聚合；新增带宽为该月新创建线路带宽之和。</li><li>月销统计按服务月份展开：以开始时间所在月份作为第一个服务月，按时长（月）逐月计入；因此季度、半年、年付线路会在覆盖到的每个月计入合同月销和结算月销，不足整月按实际月数比例计入。</li><li>未来 6 个月预测仅纳入统计基准日在用线路；线路结束后按付款周期（月、季度、半年、年）自动续约，合同月销和结算月销按当前月度折算金额延续。</li><li>7 天内到期口径为结束日期落在统计基准日到基准日后 7 个自然日之间，包含边界日期。</li></ul></section>
+<section class="panel"><h2>十四、口径说明</h2><ul><li>金额按源表约定展示为人民币元。</li><li>总售出带宽为所有有效线路带宽之和；平台和地域占比均以全量带宽为分母。</li><li>已回收线路定义为结束时间早于统计基准日的线路；全量财务和历史新增统计保留已回收线路数据。</li><li>加权平均销售单价 = Σ（带宽 × 销售单价）÷ Σ带宽。</li><li>合同口径每 Mbps 月均销售价格 = 合同销售额 ÷ Σ（带宽 × 合同月数）。</li><li>每月在售线路数和在售总带宽采用月末快照口径，当前月以统计基准日作为快照日期；快照日尚未开始或已经结束的线路不计入。</li><li>每月回收线路统计按结束日期所在自然月聚合；仅统计结束日期早于统计基准日的线路，回收带宽为这些线路带宽之和。</li><li>按线路创建时间按自然月聚合；新增带宽为该月新创建线路带宽之和。</li><li>月销统计按服务月份展开：以开始时间所在月份作为第一个服务月，按时长（月）逐月计入；因此季度、半年、年付线路会在覆盖到的每个月计入合同月销和结算月销，不足整月按实际月数比例计入。</li><li>未来 6 个月预测仅纳入统计基准日在用线路；线路结束后按付款周期（月、季度、半年、年）自动续约，合同月销和结算月销按当前月度折算金额延续。</li><li>「时长（月）」缺失时按（结束日期 − 开始日期 + 1 天）÷ 30 推导合同月数，并记录在数据质量检查中。</li><li>7 天内到期口径为结束日期落在统计基准日到基准日后 7 个自然日之间，包含边界日期。</li></ul></section>
 <div class="footer">由 report_generator.py 生成。</div>
 </main>
 </body>
