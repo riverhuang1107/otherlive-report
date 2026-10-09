@@ -791,21 +791,37 @@ def markdown_table(headers: list[str], rows: list[list[str]]) -> str:
     return "\n".join(lines)
 
 
-def platform_pie_svg(platform_rows: list[dict[str, Any]]) -> str:
+def _estimate_label_width(text: str, font_size: float = 14.0) -> float:
+    """Rough width estimate for mixed CJK and Latin text at a given font size."""
+
+    return sum(
+        font_size if ord(char) > 0x2E7F else font_size * 0.62 for char in text
+    )
+
+
+def platform_pie_svg(
+    platform_rows: list[dict[str, Any]],
+    *,
+    value_field: str = "bandwidth",
+    title: str = "各线路平台售出带宽占比",
+    total_label: str = "Mbps 总带宽",
+    empty_text: str = '<p class="muted">暂无平台带宽数据。</p>',
+) -> str:
     """Render an inline SVG pie chart using absolute platform bandwidth totals."""
 
-    total_bandwidth = sum(float(row["bandwidth"]) for row in platform_rows)
+    total_bandwidth = sum(float(row[value_field]) for row in platform_rows)
     if not platform_rows or total_bandwidth <= 0:
-        return '<p class="muted">暂无平台带宽数据。</p>'
+        return empty_text
 
     width, height = 520, 290
     cx, cy, radius = 145, 145, 108
     colors = ["#2b75b3", "#f59e0b", "#22a06b", "#8b5cf6", "#ef4444", "#06b6d4"]
     paths: list[str] = []
     legend: list[str] = []
+    legend_widths: list[float] = []
     start_angle = -math.pi / 2
     for index, row in enumerate(platform_rows):
-        bandwidth = float(row["bandwidth"])
+        bandwidth = float(row[value_field])
         share = bandwidth / total_bandwidth
         end_angle = start_angle + share * 2 * math.pi
         color = colors[index % len(colors)]
@@ -822,9 +838,15 @@ def platform_pie_svg(platform_rows: list[dict[str, Any]]) -> str:
                 f'A {radius} {radius} 0 {large_arc} 1 {end_x:.2f} {end_y:.2f} Z" '
                 f'fill="{color}"/>'
             )
-        name = html.escape(str(row["name"]))
-        bandwidth_text = html.escape(fmt_number(bandwidth))
-        share_text = html.escape(fmt_percent(row["bandwidth_share"]))
+        name = str(row["name"])
+        bandwidth_text = fmt_number(bandwidth)
+        share_text = fmt_percent(share)
+        legend_widths.append(
+            _estimate_label_width(f"{name}：{bandwidth_text} Mbps（{share_text}）")
+        )
+        name = html.escape(name)
+        bandwidth_text = html.escape(bandwidth_text)
+        share_text = html.escape(share_text)
         legend_y = 72 + index * 34
         legend.append(
             f'<rect x="315" y="{legend_y - 13}" width="14" height="14" rx="3" fill="{color}"/>'
@@ -832,12 +854,14 @@ def platform_pie_svg(platform_rows: list[dict[str, Any]]) -> str:
         )
         start_angle = end_angle
 
+    svg_width = max(width, math.ceil(340 + max(legend_widths, default=0.0)) + 16)
+
     return (
-        f'<svg class="platform-pie" viewBox="0 0 {width} {height}" role="img" '
-        f'aria-label="各线路平台售出带宽占比饼图">'
-        f'<title>各线路平台售出带宽占比</title>{"".join(paths)}'
+        f'<svg class="platform-pie" viewBox="0 0 {svg_width} {height}" role="img" '
+        f'aria-label="{html.escape(title)}饼图">'
+        f'<title>{html.escape(title)}</title>{"".join(paths)}'
         f'<text x="145" y="140" text-anchor="middle" class="pie-total">{fmt_number(total_bandwidth)}</text>'
-        f'<text x="145" y="163" text-anchor="middle" class="pie-unit">Mbps 总带宽</text>'
+        f'<text x="145" y="163" text-anchor="middle" class="pie-unit">{html.escape(total_label)}</text>'
         f'{"".join(legend)}</svg>'
     )
 
@@ -1297,6 +1321,13 @@ def render_report(
         for row in status_rows
     ]
     platform_pie = platform_pie_svg(platform_rows)
+    platform_active_pie = platform_pie_svg(
+        platform_rows,
+        value_field="active_bandwidth",
+        title="各平台在售带宽占比",
+        total_label="Mbps 在售总带宽",
+        empty_text='<p class="muted">暂无在售带宽数据。</p>',
+    )
     active_bandwidth_bar = active_bandwidth_bar_svg(active_bandwidth_rows)
     reclaimed_bar = active_bandwidth_bar_svg(
         reclaimed_rows,
@@ -1416,6 +1447,15 @@ def render_report(
         ],
         "```",
     ]
+    mermaid_platform_active_pie = [
+        "```mermaid",
+        "pie title 各平台在售带宽（Mbps）",
+        *[
+            f'    "{str(row["name"]).replace(chr(34), chr(92) + chr(34))}": {fmt_number(row["active_bandwidth"])}'
+            for row in platform_rows
+        ],
+        "```",
+    ]
 
     md_parts = [
         f"# {REPORT_TITLE}",
@@ -1528,6 +1568,10 @@ def render_report(
         "## 九、线路平台分析",
         "",
         *mermaid_platform_pie,
+        "",
+        "### 平台在售带宽占比",
+        "",
+        *mermaid_platform_active_pie,
         "",
         markdown_table(
             ["平台", "全量线路数", "全量带宽（Mbps）", "带宽占比", "在售线路数", "在售带宽（Mbps）", "已回收线路数", "已回收带宽（Mbps）", "销售额", "销售额占比", "实际收入（结算价格）", "实际收入占比", "加权销售单价", "毛利率"],
@@ -1642,11 +1686,11 @@ tr:hover td {{ background: #f8fbfe; }}
 ul {{ margin-top: 8px; }}
 .muted {{ color: #64748b; }}
 .warning {{ color: #9a3412; background: #fff7ed; border: 1px solid #fed7aa; border-radius: 8px; padding: 12px 14px; }}
-.platform-pie {{ width: 100%; max-width: 520px; min-width: 420px; height: auto; }}
+.platform-pie {{ width: 100%; max-width: 560px; min-width: 420px; height: auto; }}
 .pie-label {{ fill: #173b63; font-size: 14px; font-weight: 600; }}
 .pie-total {{ fill: #ffffff; font-size: 24px; font-weight: 800; paint-order: stroke; stroke: #173b63; stroke-width: 4px; stroke-linejoin: round; }}
 .pie-unit {{ fill: #ffffff; font-size: 13px; font-weight: 700; paint-order: stroke; stroke: #173b63; stroke-width: 2px; stroke-linejoin: round; }}
-.chart-wrap {{ display: grid; grid-template-columns: minmax(420px, 1fr) minmax(620px, 1.6fr); gap: 20px; align-items: center; }}
+.chart-wrap {{ display: grid; grid-template-columns: minmax(420px, 1fr) minmax(420px, 1fr); gap: 20px; align-items: center; }}
 .chart-card {{ min-width: 0; }}
 .active-statistics-bars, .reclaimed-statistics-bars, .creation-bars {{ width: 100%; min-width: 760px; height: auto; }}
 .monthly-sales-bars, .forecast-sales-bars {{ width: 100%; min-width: 760px; height: auto; }}
@@ -1675,7 +1719,7 @@ ul {{ margin-top: 8px; }}
 <section class="panel"><h2>六、按创建时间的月度新增</h2><p>按线路创建时间统计每月新创建的线路数量和新增带宽量；新增带宽为该月创建线路带宽之和，并拆分展示当前在售和已回收数据。</p>{creation_bar}{html_table(['创建月份','新增线路数','新增带宽（Mbps）','新增实际收入','其中在售线路','其中在售带宽（Mbps）','其中在售实际收入','其中已回收线路','其中已回收带宽（Mbps）','其中已回收实际收入'], monthly_table_rows)}<h3>按创建月份的已回收线路明细</h3><p>用于对应上表“其中已回收线路”数据，按创建月份、结束日期和线路 ID 排序。</p>{html_table(['创建月份','专线ID','线路名称','平台','地域','带宽 Mbps','创建日期','开始日期','结束日期','合同销售额','实际收入'], reclaimed_creation_detail_rows, 'reclaimed-creation-detail') if reclaimed_creation_detail_rows else '<p class="muted">暂无已回收线路。</p>'}</section>
 <section class="panel"><h2>七、月销金额分析</h2><p>按线路开始时间所在月份作为第一个服务月，按合同月数逐月展开并汇总全量历史线路；合同月销 = 销售价格 ÷ 时长（月），结算月销 = 结算价格 ÷ 时长（月），不足整月按实际月数比例计入。</p>{monthly_sales_bar}{html_table(['月份','合同月销','结算月销（实际收入）'], monthly_sales_table_rows)}</section>
 <section class="panel"><h2>八、未来6个月月销预测</h2><p>预测区间为统计基准日 {fmt_date(as_of)} 后的 6 个自然月，基于当前在用的 {summary['active_line_count']} 条线路；假设线路到期后均按当前付款周期续约，合同金额和结算金额均按当前月销水平延续。</p>{forecast_sales_bar}{html_table(['预测月份','合同月销','结算月销（实际收入）'], forecast_table_rows)}</section>
-<section class="panel"><h2>九、线路平台分析</h2><div class="chart-wrap"><div class="chart-card"><h3>平台售出带宽饼图</h3>{platform_pie}</div><div class="chart-card">{html_table(['平台','全量线路数','全量带宽（Mbps）','带宽占比','在售线路数','在售带宽（Mbps）','已回收线路数','已回收带宽（Mbps）','销售额','销售额占比','实际收入（结算价格）','实际收入占比','加权销售单价','毛利率'], platform_table_rows)}</div></div><h3>UC 平台地域分析</h3><p>以下占比均以 UC 平台自身汇总为分母，用于识别 UC 平台的地域线路数量、带宽和收入结构。</p>{html_table(['地域','线路数','线路数占比','带宽（Mbps）','带宽占比','在售线路数','在售带宽（Mbps）','已回收线路数','已回收带宽（Mbps）','合同销售额','销售额占比','实际收入（结算价格）','实际收入占比'], uc_region_table_rows, 'uc-region-table') if uc_region_table_rows else '<p class="muted">暂无 UC 平台地域数据。</p>'}</section>
+<section class="panel"><h2>九、线路平台分析</h2><div class="chart-wrap"><div class="chart-card"><h3>平台售出带宽饼图</h3>{platform_pie}</div><div class="chart-card"><h3>平台在售带宽饼图</h3>{platform_active_pie}</div></div>{html_table(['平台','全量线路数','全量带宽（Mbps）','带宽占比','在售线路数','在售带宽（Mbps）','已回收线路数','已回收带宽（Mbps）','销售额','销售额占比','实际收入（结算价格）','实际收入占比','加权销售单价','毛利率'], platform_table_rows)}<h3>UC 平台地域分析</h3><p>以下占比均以 UC 平台自身汇总为分母，用于识别 UC 平台的地域线路数量、带宽和收入结构。</p>{html_table(['地域','线路数','线路数占比','带宽（Mbps）','带宽占比','在售线路数','在售带宽（Mbps）','已回收线路数','已回收带宽（Mbps）','合同销售额','销售额占比','实际收入（结算价格）','实际收入占比'], uc_region_table_rows, 'uc-region-table') if uc_region_table_rows else '<p class="muted">暂无 UC 平台地域数据。</p>'}</section>
 <section class="panel"><h2>十、地域/产品结构分析</h2>{html_table(['地域','全量线路数','全量带宽（Mbps）','带宽占比','在售线路数','在售带宽（Mbps）','已回收线路数','已回收带宽（Mbps）','销售额','销售额占比','实际收入（结算价格）','实际收入占比','毛利率'], region_table_rows)}</section>
 <section class="panel"><h2>十一、付款周期分析</h2>{html_table(['付款周期','全量线路数','线路数占比','全量带宽（Mbps）','带宽占比','在售线路数','在售带宽（Mbps）','已回收线路数','已回收带宽（Mbps）','销售额','销售额占比','实际收入（结算价格）','实际收入占比','平均时长（月）'], payment_table_rows)}</section>
 <section class="panel"><h2>十二、定价与利润风险</h2>{html_risks}</section>
