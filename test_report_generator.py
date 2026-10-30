@@ -232,6 +232,42 @@ class ReportGeneratorTest(unittest.TestCase):
             sum(line.end_date < max(item.end_date for item in lines) for line in lines),
         )
 
+    def test_forecast_skips_months_before_line_start(self):
+        def make_line(line_id, start, end, cycle, term, sales, settlement):
+            return report_generator.Line(
+                row_number=1, line_id=line_id, name=line_id, platform="p", region="r",
+                bandwidth=10.0, create_date=start, start_date=start, end_date=end,
+                payment_cycle=cycle, term_months=term, sale_unit_price=0.0,
+                cost_unit_price=0.0, settlement_unit_price=0.0, sales_total=sales,
+                settlement_total=settlement, cost_total=0.0,
+            )
+
+        as_of = date(2026, 10, 30)
+        lines = [
+            make_line("A", date(2026, 10, 1), date(2026, 10, 31), "月", 1, 100.0, 80.0),
+            make_line("B", date(2027, 1, 15), date(2027, 4, 14), "季度", 3, 300.0, 240.0),
+        ]
+        rows = report_generator.forecast_monthly_sales_metrics(lines, as_of, horizon=6)
+        self.assertEqual(
+            [row["month"] for row in rows],
+            ["2026-11", "2026-12", "2027-01", "2027-02", "2027-03", "2027-04"],
+        )
+        self.assertEqual([row["line_count"] for row in rows], [1, 1, 2, 2, 2, 2])
+        self.assertEqual(
+            [row["contract_monthly_sales"] for row in rows],
+            [100.0, 100.0, 200.0, 200.0, 200.0, 200.0],
+        )
+        self.assertEqual(
+            [row["settlement_monthly_sales"] for row in rows],
+            [80.0, 80.0, 160.0, 160.0, 160.0, 160.0],
+        )
+
+        empty_rows = report_generator.forecast_monthly_sales_metrics(
+            [lines[1]], as_of, horizon=2
+        )
+        self.assertEqual([row["month"] for row in empty_rows], ["2026-11", "2026-12"])
+        self.assertEqual([row["line_count"] for row in empty_rows], [0, 0])
+
     def test_output_is_unique_and_contains_status_and_monthly_sections(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             output_root = Path(temp_dir)
