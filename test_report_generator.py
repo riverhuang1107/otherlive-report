@@ -183,23 +183,33 @@ class ReportGeneratorTest(unittest.TestCase):
         self.assertAlmostEqual(sum(row["settlement_share"] for row in uc_rows), 1.0)
         multi_month_line = next(line for line in lines if line.term_months >= 3)
         monthly_sales_by_month = {row["month"]: row for row in monthly_sales}
-        expected_contract_monthly = multi_month_line.sales_total / multi_month_line.term_months
-        expected_settlement_monthly = (
-            multi_month_line.settlement_total / multi_month_line.term_months
+        single_line_rows = {
+            row["month"]: row
+            for row in report_generator.service_monthly_sales_metrics([multi_month_line])
+        }
+        line_days = report_generator.service_days(multi_month_line)
+        self.assertAlmostEqual(
+            sum(row["contract_monthly_sales"] for row in single_line_rows.values()),
+            multi_month_line.sales_total,
         )
-        for offset in range(int(round(multi_month_line.term_months))):
-            month = report_generator.add_months(multi_month_line.start_date, offset).strftime(
-                "%Y-%m"
-            )
+        month_start = date(multi_month_line.start_date.year, multi_month_line.start_date.month, 1)
+        while month_start <= multi_month_line.end_date:
+            month = month_start.strftime("%Y-%m")
+            next_month = report_generator.add_months(month_start, 1)
+            overlap_days = (
+                min(multi_month_line.end_date, next_month - timedelta(days=1))
+                - max(multi_month_line.start_date, month_start)
+            ).days + 1
             self.assertIn(month, monthly_sales_by_month)
-            self.assertGreaterEqual(
-                monthly_sales_by_month[month]["contract_monthly_sales"],
-                expected_contract_monthly,
+            self.assertAlmostEqual(
+                single_line_rows[month]["contract_monthly_sales"],
+                multi_month_line.sales_total / line_days * overlap_days,
             )
-            self.assertGreaterEqual(
-                monthly_sales_by_month[month]["settlement_monthly_sales"],
-                expected_settlement_monthly,
+            self.assertAlmostEqual(
+                single_line_rows[month]["settlement_monthly_sales"],
+                multi_month_line.settlement_total / line_days * overlap_days,
             )
+            month_start = next_month
 
         forecast = report_generator.forecast_monthly_sales_metrics(lines, as_of, horizon=6)
         self.assertEqual(
@@ -208,14 +218,23 @@ class ReportGeneratorTest(unittest.TestCase):
         )
         active_lines = [line for line in lines if line.end_date >= as_of]
         self.assertTrue(all(row["line_count"] == len(active_lines) for row in forecast))
-        self.assertAlmostEqual(
-            sum(row["contract_monthly_sales"] for row in forecast),
-            6 * sum(line.sales_total / line.term_months for line in active_lines),
-        )
-        self.assertAlmostEqual(
-            sum(row["settlement_monthly_sales"] for row in forecast),
-            6 * sum(line.settlement_total / line.term_months for line in active_lines),
-        )
+        for row in forecast:
+            month_start = date(int(row["month"][:4]), int(row["month"][5:]), 1)
+            month_days = (report_generator.add_months(month_start, 1) - month_start).days
+            self.assertAlmostEqual(
+                row["contract_monthly_sales"],
+                sum(
+                    line.sales_total / report_generator.service_days(line) * month_days
+                    for line in active_lines
+                ),
+            )
+            self.assertAlmostEqual(
+                row["settlement_monthly_sales"],
+                sum(
+                    line.settlement_total / report_generator.service_days(line) * month_days
+                    for line in active_lines
+                ),
+            )
         displayed_monthly_sales = report_generator.service_monthly_sales_metrics(
             lines, through_date=as_of
         )
@@ -253,14 +272,17 @@ class ReportGeneratorTest(unittest.TestCase):
             ["2026-11", "2026-12", "2027-01", "2027-02", "2027-03", "2027-04"],
         )
         self.assertEqual([row["line_count"] for row in rows], [1, 1, 2, 2, 2, 2])
-        self.assertEqual(
-            [row["contract_monthly_sales"] for row in rows],
-            [100.0, 100.0, 200.0, 200.0, 200.0, 200.0],
-        )
-        self.assertEqual(
-            [row["settlement_monthly_sales"] for row in rows],
-            [80.0, 80.0, 160.0, 160.0, 160.0, 160.0],
-        )
+        a_contract, a_settlement = 100.0 / 31, 80.0 / 31
+        b_contract, b_settlement = 300.0 / 90, 240.0 / 90
+        month_days = [30, 31, 31, 28, 31, 30]
+        b_days = [0, 0, 17, 28, 31, 30]
+        expected_contract = [a_contract * d + b_contract * b for d, b in zip(month_days, b_days)]
+        expected_settlement = [
+            a_settlement * d + b_settlement * b for d, b in zip(month_days, b_days)
+        ]
+        for row, contract, settlement in zip(rows, expected_contract, expected_settlement):
+            self.assertAlmostEqual(row["contract_monthly_sales"], contract)
+            self.assertAlmostEqual(row["settlement_monthly_sales"], settlement)
 
         empty_rows = report_generator.forecast_monthly_sales_metrics(
             [lines[1]], as_of, horizon=2
@@ -310,8 +332,8 @@ class ReportGeneratorTest(unittest.TestCase):
             self.assertIn("实际收入（结算价格）", markdown)
             self.assertIn("月销金额分析", markdown)
             self.assertIn("结算月销（实际收入）", markdown)
-            self.assertIn("按线路开始时间所在月份作为第一个服务月", markdown)
-            self.assertIn("季度、半年、年付线路", markdown)
+            self.assertIn("按服务天数把全量历史线路的收入分摊到各自然月", markdown)
+            self.assertIn("跨月线路按各月占用天数拆分", markdown)
             self.assertIn("未来6个月月销预测", markdown)
             self.assertIn("2027-02", markdown)
             self.assertNotIn("2027-03", markdown)
@@ -362,7 +384,7 @@ class ReportGeneratorTest(unittest.TestCase):
             self.assertIn("实际收入（结算价格）", html)
             self.assertIn("月销金额分析", html)
             self.assertIn("class=\"monthly-sales-bars\"", html)
-            self.assertIn("按线路开始时间所在月份作为第一个服务月", html)
+            self.assertIn("按服务天数把全量历史线路的收入分摊到各自然月", html)
             self.assertIn("按服务月份统计合同月销和结算月销柱状图", html)
             self.assertIn("未来6个月月销预测", html)
             self.assertIn("class=\"forecast-sales-bars\"", html)

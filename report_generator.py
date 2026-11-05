@@ -647,13 +647,14 @@ def monthly_reclaimed_metrics(lines: list[Line], as_of: date) -> list[dict[str, 
 def service_monthly_sales_metrics(
     lines: list[Line], through_date: date | None = None
 ) -> list[dict[str, Any]]:
-    """Allocate monthly contract and settlement sales across service months.
+    """Allocate contract and settlement sales to calendar months by service days.
 
-    A line starts contributing in the month containing ``start_date`` and
-    contributes its monthly equivalent for every full contracted month. If a
-    line spans only part of a calendar month, the final contribution is
-    prorated so that all source revenue is allocated exactly once. This keeps
-    quarterly, half-year and annual lines visible in each month they cover.
+    Each line's daily amount is its price divided by its service days
+    (``end_date - start_date + 1``). Every calendar month receives the daily
+    amount multiplied by the number of service days that fall inside it, so
+    all source revenue is allocated exactly once and lines starting mid-month
+    are split across the months they actually cover. Lines whose end date is
+    earlier than the start date have no service days and are skipped.
     When ``through_date`` is supplied, only months through that date's
     calendar month are returned for report display.
     """
@@ -666,36 +667,47 @@ def service_monthly_sales_metrics(
             "line_count": 0,
         }
     )
+    last_month = through_date.strftime("%Y-%m") if through_date is not None else None
     for line in lines:
-        contract_monthly = line.sales_total / line.term_months
-        settlement_monthly = line.settlement_total / line.term_months
-        month_count = max(1, math.ceil(line.term_months))
-        for offset in range(month_count):
-            month = add_months(line.start_date, offset).strftime("%Y-%m")
-            if through_date is not None and month > through_date.strftime("%Y-%m"):
-                continue
-            months_in_period = 1.0
-            if offset == month_count - 1 and line.term_months < month_count:
-                months_in_period = line.term_months - (month_count - 1)
+        days = service_days(line)
+        if days <= 0:
+            continue
+        contract_daily = line.sales_total / days
+        settlement_daily = line.settlement_total / days
+        month_start = date(line.start_date.year, line.start_date.month, 1)
+        while month_start <= line.end_date:
+            month = month_start.strftime("%Y-%m")
+            if last_month is not None and month > last_month:
+                break
+            next_month = add_months(month_start, 1)
+            overlap_start = max(line.start_date, month_start)
+            overlap_end = min(line.end_date, next_month - timedelta(days=1))
+            overlap_days = (overlap_end - overlap_start).days + 1
             groups[month]["month"] = month
-            groups[month]["contract_monthly_sales"] += contract_monthly * months_in_period
-            groups[month]["settlement_monthly_sales"] += settlement_monthly * months_in_period
+            groups[month]["contract_monthly_sales"] += contract_daily * overlap_days
+            groups[month]["settlement_monthly_sales"] += settlement_daily * overlap_days
             groups[month]["line_count"] += 1
+            month_start = next_month
     return [groups[month] for month in sorted(groups)]
+
+
+def service_days(line: Line) -> int:
+    """Return the inclusive number of service days between start and end dates."""
+
+    return (line.end_date - line.start_date).days + 1
 
 
 def forecast_monthly_sales_metrics(
     lines: list[Line], as_of: date, horizon: int = 6
 ) -> list[dict[str, Any]]:
-    """Forecast monthly sales for active lines with automatic renewals.
+    """Forecast monthly sales for active lines by service days.
 
-    The forecast begins in the calendar month after ``as_of``. Active lines
-    keep their current monthly contract and settlement equivalents. Lines are
-    assumed to renew at expiry without a gap, so once a line's service has
-    started it contributes in every forecast month regardless of its payment
-    cycle. A line contributes from the calendar month containing its
-    ``start_date`` (consistent with ``service_monthly_sales_metrics``) and is
-    excluded from months that end before it starts.
+    The forecast begins in the calendar month after ``as_of`` and uses the same
+    daily allocation as ``service_monthly_sales_metrics``: each line's daily
+    amount is its price divided by its service days. Lines are assumed to renew
+    at expiry without a gap at the same daily amount, so a forecast month
+    receives the daily amount multiplied by the days in that month on or after
+    the line's ``start_date``. Months ending before a line starts exclude it.
     """
 
     if horizon <= 0:
@@ -718,16 +730,22 @@ def forecast_monthly_sales_metrics(
         month = month_start.strftime("%Y-%m")
         groups[month]["month"] = month
     for line in active_lines:
+        days = service_days(line)
+        if days <= 0:
+            continue
+        contract_daily = line.sales_total / days
+        settlement_daily = line.settlement_total / days
         for month_start in forecast_months:
             month_end = add_months(month_start, 1) - timedelta(days=1)
             if line.start_date > month_end:
                 continue
+            covered_days = (month_end - max(line.start_date, month_start)).days + 1
             month = month_start.strftime("%Y-%m")
             groups[month]["month"] = month
             groups[month]["line_count"] += 1
             groups[month]["bandwidth"] += line.bandwidth
-            groups[month]["contract_monthly_sales"] += line.sales_total / line.term_months
-            groups[month]["settlement_monthly_sales"] += line.settlement_total / line.term_months
+            groups[month]["contract_monthly_sales"] += contract_daily * covered_days
+            groups[month]["settlement_monthly_sales"] += settlement_daily * covered_days
     return [groups[month] for month in sorted(groups)]
 
 
@@ -1539,7 +1557,7 @@ def render_report(
         "",
         "## 七、月销金额分析",
         "",
-        "按线路开始时间所在月份作为第一个服务月，按合同月数逐月展开并汇总全量历史线路；合同月销 = 销售价格 ÷ 时长（月），结算月销 = 结算价格 ÷ 时长（月），不足整月按实际月数比例计入。",
+        "按服务天数把全量历史线路的收入分摊到各自然月：日均金额 = 价格 ÷ 服务天数（结束日期 − 开始日期 + 1 天），每月月销 = 日均金额 × 当月实际服务天数；合同月销按销售价格计算，结算月销按结算价格计算。",
         "",
         *mermaid_monthly_sales_chart,
         "",
@@ -1550,7 +1568,7 @@ def render_report(
         "",
         "## 八、未来6个月月销预测",
         "",
-        f"预测区间为统计基准日 {fmt_date(as_of)} 后的 6 个自然月，基于当前在用的 {summary['active_line_count']} 条线路；假设线路到期后无间断续约，合同月销和结算月销按当前月度折算金额延续；开始时间晚于预测月份的线路不计入该月。",
+        f"预测区间为统计基准日 {fmt_date(as_of)} 后的 6 个自然月，基于当前在用的 {summary['active_line_count']} 条线路；与月销金额分析采用相同的按天口径，假设线路到期后按当前日均金额无间断续约，每月预测 = 日均金额 × 当月服务天数；开始时间晚于预测月份的线路不计入该月，当月开始的线路按开始日起的实际天数计入。",
         "",
         *mermaid_forecast_sales_chart,
         "",
@@ -1619,8 +1637,8 @@ def render_report(
         "- 合同口径每 Mbps 月均销售价格 = 合同销售额 ÷ Σ（带宽 × 合同月数）。",
         "- 每月在售线路数和在售总带宽采用月末快照口径，当前月以统计基准日作为快照日期；快照日尚未开始或已经结束的线路不计入。",
         "- 每月回收线路统计按结束日期所在自然月聚合；仅统计结束日期早于统计基准日的线路，回收带宽为这些线路带宽之和。",
-        "- 月销统计按服务月份展开：以开始时间所在月份作为第一个服务月，按时长（月）逐月计入；因此季度、半年、年付线路会在覆盖到的每个月计入合同月销和结算月销，不足整月按实际月数比例计入。",
-        "- 未来 6 个月预测仅纳入统计基准日在用线路；假设线路到期后无间断续约，合同月销和结算月销按当前月度折算金额延续；开始时间晚于预测月份的线路不计入该月。",
+        "- 月销统计按服务天数分摊：日均金额 = 价格 ÷ 服务天数（结束日期 − 开始日期 + 1 天），各自然月按实际服务天数计入合同月销和结算月销；跨月线路按各月占用天数拆分。",
+        "- 未来 6 个月预测仅纳入统计基准日在用线路，与月销统计采用相同的按天口径；假设线路到期后按当前日均金额无间断续约，每月预测 = 日均金额 × 当月服务天数；开始时间晚于预测月份的线路不计入该月。",
         "- 「时长（月）」缺失时按（结束日期 − 开始日期 + 1 天）÷ 30 推导合同月数，并记录在数据质量检查中。",
         "- 7 天内到期口径为结束日期落在统计基准日到基准日后 7 个自然日之间，包含边界日期。",
     ]
@@ -1711,14 +1729,14 @@ ul {{ margin-top: 8px; }}
 <section class="panel"><h2>四、每月在售统计</h2><p>按月末快照统计每个自然月的在售线路数量和在售总带宽，当前月以统计基准日作为快照日期。快照日处于线路开始至结束日期（含边界）时计入。</p>{active_bandwidth_bar}{html_table(['月份','在售线路数','在售总带宽（Mbps）'], active_bandwidth_table_rows)}</section>
 <section class="panel"><h2>五、每月回收线路统计</h2><p>按线路结束日期所在月份统计每月回收线路数量和回收带宽；仅统计结束日期早于统计基准日的线路。</p>{reclaimed_bar}{html_table(['月份','回收线路数','回收带宽（Mbps）'], reclaimed_table_rows) if reclaimed_table_rows else '<p class="muted">暂无已回收线路。</p>'}</section>
 <section class="panel"><h2>六、按创建时间的月度新增</h2><p>按线路创建时间统计每月新创建的线路数量和新增带宽量；新增带宽为该月创建线路带宽之和，并拆分展示当前在售和已回收数据。</p>{creation_bar}{html_table(['创建月份','新增线路数','新增带宽（Mbps）','新增实际收入','其中在售线路','其中在售带宽（Mbps）','其中在售实际收入','其中已回收线路','其中已回收带宽（Mbps）','其中已回收实际收入'], monthly_table_rows)}<h3>按创建月份的已回收线路明细</h3><p>用于对应上表“其中已回收线路”数据，按创建月份、结束日期和线路 ID 排序。</p>{html_table(['创建月份','专线ID','线路名称','平台','地域','带宽 Mbps','创建日期','开始日期','结束日期','合同销售额','实际收入'], reclaimed_creation_detail_rows, 'reclaimed-creation-detail') if reclaimed_creation_detail_rows else '<p class="muted">暂无已回收线路。</p>'}</section>
-<section class="panel"><h2>七、月销金额分析</h2><p>按线路开始时间所在月份作为第一个服务月，按合同月数逐月展开并汇总全量历史线路；合同月销 = 销售价格 ÷ 时长（月），结算月销 = 结算价格 ÷ 时长（月），不足整月按实际月数比例计入。</p>{monthly_sales_bar}{html_table(['月份','合同月销','结算月销（实际收入）'], monthly_sales_table_rows)}</section>
-<section class="panel"><h2>八、未来6个月月销预测</h2><p>预测区间为统计基准日 {fmt_date(as_of)} 后的 6 个自然月，基于当前在用的 {summary['active_line_count']} 条线路；假设线路到期后无间断续约，合同月销和结算月销按当前月度折算金额延续；开始时间晚于预测月份的线路不计入该月。</p>{forecast_sales_bar}{html_table(['预测月份','合同月销','结算月销（实际收入）'], forecast_table_rows)}</section>
+<section class="panel"><h2>七、月销金额分析</h2><p>按服务天数把全量历史线路的收入分摊到各自然月：日均金额 = 价格 ÷ 服务天数（结束日期 − 开始日期 + 1 天），每月月销 = 日均金额 × 当月实际服务天数；合同月销按销售价格计算，结算月销按结算价格计算。</p>{monthly_sales_bar}{html_table(['月份','合同月销','结算月销（实际收入）'], monthly_sales_table_rows)}</section>
+<section class="panel"><h2>八、未来6个月月销预测</h2><p>预测区间为统计基准日 {fmt_date(as_of)} 后的 6 个自然月，基于当前在用的 {summary['active_line_count']} 条线路；与月销金额分析采用相同的按天口径，假设线路到期后按当前日均金额无间断续约，每月预测 = 日均金额 × 当月服务天数；开始时间晚于预测月份的线路不计入该月，当月开始的线路按开始日起的实际天数计入。</p>{forecast_sales_bar}{html_table(['预测月份','合同月销','结算月销（实际收入）'], forecast_table_rows)}</section>
 <section class="panel"><h2>九、线路平台分析</h2><div class="chart-wrap"><div class="chart-card"><h3>平台售出带宽饼图</h3>{platform_pie}</div><div class="chart-card"><h3>平台在售带宽饼图</h3>{platform_active_pie}</div></div>{html_table(['平台','全量线路数','全量带宽（Mbps）','带宽占比','在售线路数','在售带宽（Mbps）','已回收线路数','已回收带宽（Mbps）','销售额','销售额占比','实际收入（结算价格）','实际收入占比','加权销售单价','毛利率'], platform_table_rows)}<h3>UC 平台地域分析</h3><p>以下占比均以 UC 平台自身汇总为分母，用于识别 UC 平台的地域线路数量、带宽和收入结构。</p>{html_table(['地域','线路数','线路数占比','带宽（Mbps）','带宽占比','在售线路数','在售带宽（Mbps）','已回收线路数','已回收带宽（Mbps）','合同销售额','销售额占比','实际收入（结算价格）','实际收入占比'], uc_region_table_rows, 'uc-region-table') if uc_region_table_rows else '<p class="muted">暂无 UC 平台地域数据。</p>'}</section>
 <section class="panel"><h2>十、地域/产品结构分析</h2>{html_table(['地域','全量线路数','全量带宽（Mbps）','带宽占比','在售线路数','在售带宽（Mbps）','已回收线路数','已回收带宽（Mbps）','销售额','销售额占比','实际收入（结算价格）','实际收入占比','毛利率'], region_table_rows)}</section>
 <section class="panel"><h2>十一、付款周期分析</h2>{html_table(['付款周期','全量线路数','线路数占比','全量带宽（Mbps）','带宽占比','在售线路数','在售带宽（Mbps）','已回收线路数','已回收带宽（Mbps）','销售额','销售额占比','实际收入（结算价格）','实际收入占比','平均时长（月）'], payment_table_rows)}</section>
 <section class="panel"><h2>十二、定价与利润风险</h2>{html_risks}</section>
 <section class="panel"><h2>十三、数据质量检查</h2><ul>{html_issue}<li>已回收线路：{len(expired)} 条。</li></ul></section>
-<section class="panel"><h2>十四、口径说明</h2><ul><li>金额按源表约定展示为人民币元。</li><li>总售出带宽为所有有效线路带宽之和；平台和地域占比均以全量带宽为分母。</li><li>已回收线路定义为结束时间早于统计基准日的线路；全量财务和历史新增统计保留已回收线路数据。</li><li>加权平均销售单价 = Σ（带宽 × 销售单价）÷ Σ带宽。</li><li>合同口径每 Mbps 月均销售价格 = 合同销售额 ÷ Σ（带宽 × 合同月数）。</li><li>每月在售线路数和在售总带宽采用月末快照口径，当前月以统计基准日作为快照日期；快照日尚未开始或已经结束的线路不计入。</li><li>每月回收线路统计按结束日期所在自然月聚合；仅统计结束日期早于统计基准日的线路，回收带宽为这些线路带宽之和。</li><li>按线路创建时间按自然月聚合；新增带宽为该月新创建线路带宽之和。</li><li>月销统计按服务月份展开：以开始时间所在月份作为第一个服务月，按时长（月）逐月计入；因此季度、半年、年付线路会在覆盖到的每个月计入合同月销和结算月销，不足整月按实际月数比例计入。</li><li>未来 6 个月预测仅纳入统计基准日在用线路；假设线路到期后无间断续约，合同月销和结算月销按当前月度折算金额延续；开始时间晚于预测月份的线路不计入该月。</li><li>「时长（月）」缺失时按（结束日期 − 开始日期 + 1 天）÷ 30 推导合同月数，并记录在数据质量检查中。</li><li>7 天内到期口径为结束日期落在统计基准日到基准日后 7 个自然日之间，包含边界日期。</li></ul></section>
+<section class="panel"><h2>十四、口径说明</h2><ul><li>金额按源表约定展示为人民币元。</li><li>总售出带宽为所有有效线路带宽之和；平台和地域占比均以全量带宽为分母。</li><li>已回收线路定义为结束时间早于统计基准日的线路；全量财务和历史新增统计保留已回收线路数据。</li><li>加权平均销售单价 = Σ（带宽 × 销售单价）÷ Σ带宽。</li><li>合同口径每 Mbps 月均销售价格 = 合同销售额 ÷ Σ（带宽 × 合同月数）。</li><li>每月在售线路数和在售总带宽采用月末快照口径，当前月以统计基准日作为快照日期；快照日尚未开始或已经结束的线路不计入。</li><li>每月回收线路统计按结束日期所在自然月聚合；仅统计结束日期早于统计基准日的线路，回收带宽为这些线路带宽之和。</li><li>按线路创建时间按自然月聚合；新增带宽为该月新创建线路带宽之和。</li><li>月销统计按服务天数分摊：日均金额 = 价格 ÷ 服务天数（结束日期 − 开始日期 + 1 天），各自然月按实际服务天数计入合同月销和结算月销；跨月线路按各月占用天数拆分。</li><li>未来 6 个月预测仅纳入统计基准日在用线路，与月销统计采用相同的按天口径；假设线路到期后按当前日均金额无间断续约，每月预测 = 日均金额 × 当月服务天数；开始时间晚于预测月份的线路不计入该月。</li><li>「时长（月）」缺失时按（结束日期 − 开始日期 + 1 天）÷ 30 推导合同月数，并记录在数据质量检查中。</li><li>7 天内到期口径为结束日期落在统计基准日到基准日后 7 个自然日之间，包含边界日期。</li></ul></section>
 <div class="footer">由 report_generator.py 生成。</div>
 </main>
 </body>
