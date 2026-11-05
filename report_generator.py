@@ -1550,7 +1550,7 @@ def render_report(
         "",
         "## 八、未来6个月月销预测",
         "",
-        f"预测区间为统计基准日 {fmt_date(as_of)} 后的 6 个自然月，基于当前在用的 {summary['active_line_count']} 条线路；假设线路到期后均按当前付款周期续约，合同金额和结算金额均按当前月销水平延续。",
+        f"预测区间为统计基准日 {fmt_date(as_of)} 后的 6 个自然月，基于当前在用的 {summary['active_line_count']} 条线路；假设线路到期后无间断续约，合同月销和结算月销按当前月度折算金额延续；开始时间晚于预测月份的线路不计入该月。",
         "",
         *mermaid_forecast_sales_chart,
         "",
@@ -1712,7 +1712,7 @@ ul {{ margin-top: 8px; }}
 <section class="panel"><h2>五、每月回收线路统计</h2><p>按线路结束日期所在月份统计每月回收线路数量和回收带宽；仅统计结束日期早于统计基准日的线路。</p>{reclaimed_bar}{html_table(['月份','回收线路数','回收带宽（Mbps）'], reclaimed_table_rows) if reclaimed_table_rows else '<p class="muted">暂无已回收线路。</p>'}</section>
 <section class="panel"><h2>六、按创建时间的月度新增</h2><p>按线路创建时间统计每月新创建的线路数量和新增带宽量；新增带宽为该月创建线路带宽之和，并拆分展示当前在售和已回收数据。</p>{creation_bar}{html_table(['创建月份','新增线路数','新增带宽（Mbps）','新增实际收入','其中在售线路','其中在售带宽（Mbps）','其中在售实际收入','其中已回收线路','其中已回收带宽（Mbps）','其中已回收实际收入'], monthly_table_rows)}<h3>按创建月份的已回收线路明细</h3><p>用于对应上表“其中已回收线路”数据，按创建月份、结束日期和线路 ID 排序。</p>{html_table(['创建月份','专线ID','线路名称','平台','地域','带宽 Mbps','创建日期','开始日期','结束日期','合同销售额','实际收入'], reclaimed_creation_detail_rows, 'reclaimed-creation-detail') if reclaimed_creation_detail_rows else '<p class="muted">暂无已回收线路。</p>'}</section>
 <section class="panel"><h2>七、月销金额分析</h2><p>按线路开始时间所在月份作为第一个服务月，按合同月数逐月展开并汇总全量历史线路；合同月销 = 销售价格 ÷ 时长（月），结算月销 = 结算价格 ÷ 时长（月），不足整月按实际月数比例计入。</p>{monthly_sales_bar}{html_table(['月份','合同月销','结算月销（实际收入）'], monthly_sales_table_rows)}</section>
-<section class="panel"><h2>八、未来6个月月销预测</h2><p>预测区间为统计基准日 {fmt_date(as_of)} 后的 6 个自然月，基于当前在用的 {summary['active_line_count']} 条线路；假设线路到期后均按当前付款周期续约，合同金额和结算金额均按当前月销水平延续。</p>{forecast_sales_bar}{html_table(['预测月份','合同月销','结算月销（实际收入）'], forecast_table_rows)}</section>
+<section class="panel"><h2>八、未来6个月月销预测</h2><p>预测区间为统计基准日 {fmt_date(as_of)} 后的 6 个自然月，基于当前在用的 {summary['active_line_count']} 条线路；假设线路到期后无间断续约，合同月销和结算月销按当前月度折算金额延续；开始时间晚于预测月份的线路不计入该月。</p>{forecast_sales_bar}{html_table(['预测月份','合同月销','结算月销（实际收入）'], forecast_table_rows)}</section>
 <section class="panel"><h2>九、线路平台分析</h2><div class="chart-wrap"><div class="chart-card"><h3>平台售出带宽饼图</h3>{platform_pie}</div><div class="chart-card"><h3>平台在售带宽饼图</h3>{platform_active_pie}</div></div>{html_table(['平台','全量线路数','全量带宽（Mbps）','带宽占比','在售线路数','在售带宽（Mbps）','已回收线路数','已回收带宽（Mbps）','销售额','销售额占比','实际收入（结算价格）','实际收入占比','加权销售单价','毛利率'], platform_table_rows)}<h3>UC 平台地域分析</h3><p>以下占比均以 UC 平台自身汇总为分母，用于识别 UC 平台的地域线路数量、带宽和收入结构。</p>{html_table(['地域','线路数','线路数占比','带宽（Mbps）','带宽占比','在售线路数','在售带宽（Mbps）','已回收线路数','已回收带宽（Mbps）','合同销售额','销售额占比','实际收入（结算价格）','实际收入占比'], uc_region_table_rows, 'uc-region-table') if uc_region_table_rows else '<p class="muted">暂无 UC 平台地域数据。</p>'}</section>
 <section class="panel"><h2>十、地域/产品结构分析</h2>{html_table(['地域','全量线路数','全量带宽（Mbps）','带宽占比','在售线路数','在售带宽（Mbps）','已回收线路数','已回收带宽（Mbps）','销售额','销售额占比','实际收入（结算价格）','实际收入占比','毛利率'], region_table_rows)}</section>
 <section class="panel"><h2>十一、付款周期分析</h2>{html_table(['付款周期','全量线路数','线路数占比','全量带宽（Mbps）','带宽占比','在售线路数','在售带宽（Mbps）','已回收线路数','已回收带宽（Mbps）','销售额','销售额占比','实际收入（结算价格）','实际收入占比','平均时长（月）'], payment_table_rows)}</section>
