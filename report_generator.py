@@ -1211,7 +1211,7 @@ def render_report(
             fmt_percent(row["settlement_share"]),
             fmt_percent(row["margin"]),
         ]
-        for row in region_rows
+        for row in sorted(region_rows, key=lambda r: r["active_bandwidth"], reverse=True)
     ]
     payment_table_rows = [
         [
