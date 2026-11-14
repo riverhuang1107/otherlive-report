@@ -1266,6 +1266,26 @@ def render_report(
             key=lambda line: (line.create_date, line.end_date, line.line_id),
         )
     ]
+    active_line_detail_rows = [
+        [
+            line.line_id,
+            line.name,
+            line.platform,
+            line.region,
+            fmt_number(line.bandwidth),
+            fmt_date(line.create_date),
+            fmt_date(line.start_date),
+            fmt_date(line.end_date),
+            fmt_money(line.sales_total, 0),
+            fmt_money(line.settlement_total, 0),
+        ]
+        for line in sorted(
+            (line for line in lines if line.end_date >= as_of),
+            key=lambda line: (line.create_date, line.line_id),
+        )
+    ]
+    active_line_detail_headers = ["专线ID", "线路名称", "平台", "地域", "带宽 Mbps", "创建日期", "开始日期", "结束日期", "合同销售额", "实际收入"]
+    reclaimed_creation_detail_headers = ["创建月份", "专线ID", "线路名称", "平台", "地域", "带宽 Mbps", "创建日期", "开始日期", "结束日期", "合同销售额", "实际收入"]
     active_bandwidth_table_rows = [
         [
             row["month"],
@@ -1520,6 +1540,19 @@ def render_report(
             active_bandwidth_table_rows,
         ),
         "",
+        "### 在用线路列表清单",
+        "",
+        f"统计基准日 {fmt_date(as_of)} 在用线路共 {len(active_line_detail_rows)} 条，按线路创建时间排序。",
+        "",
+        "<details>",
+        f"<summary>点击展开在用线路列表（{len(active_line_detail_rows)} 条）</summary>",
+        "",
+        markdown_table(active_line_detail_headers, active_line_detail_rows)
+        if active_line_detail_rows
+        else "暂无在用线路。",
+        "",
+        "</details>",
+        "",
         "## 五、每月回收线路统计",
         "",
         "按线路结束日期所在月份统计每月回收线路数量和回收带宽；仅统计结束日期早于统计基准日的线路。",
@@ -1548,12 +1581,14 @@ def render_report(
         "",
         "用于对应上表“其中已回收线路”数据，按创建月份、结束日期和线路 ID 排序。",
         "",
-        markdown_table(
-            ["创建月份", "专线ID", "线路名称", "平台", "地域", "带宽 Mbps", "创建日期", "开始日期", "结束日期", "合同销售额", "实际收入"],
-            reclaimed_creation_detail_rows,
-        )
+        "<details>",
+        f"<summary>点击展开已回收线路明细（{len(reclaimed_creation_detail_rows)} 条）</summary>",
+        "",
+        markdown_table(reclaimed_creation_detail_headers, reclaimed_creation_detail_rows)
         if reclaimed_creation_detail_rows
         else "暂无已回收线路。",
+        "",
+        "</details>",
         "",
         "## 七、月销金额分析",
         "",
@@ -1710,6 +1745,13 @@ ul {{ margin-top: 8px; }}
 .uc-region-table th, .uc-region-table td {{ padding: 7px 5px; white-space: normal; overflow-wrap: anywhere; word-break: break-word; }}
 .reclaimed-creation-detail {{ min-width: 0; table-layout: fixed; font-size: 11px; }}
 .reclaimed-creation-detail th, .reclaimed-creation-detail td {{ padding: 7px 5px; }}
+.active-line-detail {{ min-width: 0; table-layout: fixed; font-size: 11px; }}
+.active-line-detail th, .active-line-detail td {{ padding: 7px 5px; }}
+details.collapsible {{ margin: 10px 0; border: 1px solid #dbe5ef; border-radius: 8px; background: #fbfdff; }}
+details.collapsible > summary {{ cursor: pointer; padding: 10px 14px; color: #2b75b3; font-weight: 700; user-select: none; }}
+details.collapsible > summary:hover {{ background: #eef5fb; }}
+details.collapsible[open] > summary {{ border-bottom: 1px solid #dbe5ef; }}
+details.collapsible > table, details.collapsible > p {{ margin: 0; }}
 .chart-gridline {{ stroke: #dbe5ef; stroke-width: 1; }}
 .chart-axis-title, .chart-tick, .chart-value, .chart-month, .chart-legend {{ fill: #173b63; font-size: 13px; }}
 .chart-axis-title, .chart-legend {{ font-weight: 700; }}
@@ -1726,9 +1768,9 @@ ul {{ margin-top: 8px; }}
 <section class="panel"><h2>一、管理摘要</h2><ul>{html_observations}</ul></section>
 <section class="panel"><h2>二、线路状态汇总</h2><p>按统计基准日 {fmt_date(as_of)} 判断：结束时间早于统计基准日的线路为已回收，其余线路为在售。全量财务和历史新增统计均保留已回收线路数据。</p>{html_table(['线路状态','线路数','线路数占比','带宽 Mbps','带宽占比','销售额','销售额占比','实际收入（结算价格）','实际收入占比','合同毛利','毛利率'], status_table_rows)}</section>
 <section class="panel"><h2>三、7 天内到期线路提醒</h2><p>共 <strong>{len(expiring)} 条</strong>线路将在 7 天内到期，涉及 <strong>{fmt_number(total((line for line, _ in expiring), 'bandwidth') if expiring else 0)} Mbps</strong>、合同销售额 <strong>{fmt_money(total((line for line, _ in expiring), 'sales_total') if expiring else 0, 0)}</strong>、实际收入 <strong>{fmt_money(total((line for line, _ in expiring), 'settlement_total') if expiring else 0, 0)}</strong>。</p>{html_expiry}</section>
-<section class="panel"><h2>四、每月在售统计</h2><p>按月末快照统计每个自然月的在售线路数量和在售总带宽，当前月以统计基准日作为快照日期。快照日处于线路开始至结束日期（含边界）时计入。</p>{active_bandwidth_bar}{html_table(['月份','在售线路数','在售总带宽（Mbps）'], active_bandwidth_table_rows)}</section>
+<section class="panel"><h2>四、每月在售统计</h2><p>按月末快照统计每个自然月的在售线路数量和在售总带宽，当前月以统计基准日作为快照日期。快照日处于线路开始至结束日期（含边界）时计入。</p>{active_bandwidth_bar}{html_table(['月份','在售线路数','在售总带宽（Mbps）'], active_bandwidth_table_rows)}<h3>在用线路列表清单</h3><p>统计基准日 {fmt_date(as_of)} 在用线路共 {len(active_line_detail_rows)} 条，按线路创建时间排序。</p><details class="collapsible"><summary>点击展开在用线路列表（{len(active_line_detail_rows)} 条）</summary>{html_table(active_line_detail_headers, active_line_detail_rows, 'active-line-detail') if active_line_detail_rows else '<p class="muted">暂无在用线路。</p>'}</details></section>
 <section class="panel"><h2>五、每月回收线路统计</h2><p>按线路结束日期所在月份统计每月回收线路数量和回收带宽；仅统计结束日期早于统计基准日的线路。</p>{reclaimed_bar}{html_table(['月份','回收线路数','回收带宽（Mbps）'], reclaimed_table_rows) if reclaimed_table_rows else '<p class="muted">暂无已回收线路。</p>'}</section>
-<section class="panel"><h2>六、按创建时间的月度新增</h2><p>按线路创建时间统计每月新创建的线路数量和新增带宽量；新增带宽为该月创建线路带宽之和，并拆分展示当前在售和已回收数据。</p>{creation_bar}{html_table(['创建月份','新增线路数','新增带宽（Mbps）','新增实际收入','其中在售线路','其中在售带宽（Mbps）','其中在售实际收入','其中已回收线路','其中已回收带宽（Mbps）','其中已回收实际收入'], monthly_table_rows)}<h3>按创建月份的已回收线路明细</h3><p>用于对应上表“其中已回收线路”数据，按创建月份、结束日期和线路 ID 排序。</p>{html_table(['创建月份','专线ID','线路名称','平台','地域','带宽 Mbps','创建日期','开始日期','结束日期','合同销售额','实际收入'], reclaimed_creation_detail_rows, 'reclaimed-creation-detail') if reclaimed_creation_detail_rows else '<p class="muted">暂无已回收线路。</p>'}</section>
+<section class="panel"><h2>六、按创建时间的月度新增</h2><p>按线路创建时间统计每月新创建的线路数量和新增带宽量；新增带宽为该月创建线路带宽之和，并拆分展示当前在售和已回收数据。</p>{creation_bar}{html_table(['创建月份','新增线路数','新增带宽（Mbps）','新增实际收入','其中在售线路','其中在售带宽（Mbps）','其中在售实际收入','其中已回收线路','其中已回收带宽（Mbps）','其中已回收实际收入'], monthly_table_rows)}<h3>按创建月份的已回收线路明细</h3><p>用于对应上表“其中已回收线路”数据，按创建月份、结束日期和线路 ID 排序。</p><details class="collapsible"><summary>点击展开已回收线路明细（{len(reclaimed_creation_detail_rows)} 条）</summary>{html_table(reclaimed_creation_detail_headers, reclaimed_creation_detail_rows, 'reclaimed-creation-detail') if reclaimed_creation_detail_rows else '<p class="muted">暂无已回收线路。</p>'}</details></section>
 <section class="panel"><h2>七、月销金额分析</h2><p>按服务天数把全量历史线路的收入分摊到各自然月：日均金额 = 价格 ÷ 服务天数（结束日期 − 开始日期 + 1 天），每月月销 = 日均金额 × 当月实际服务天数；合同月销按销售价格计算，结算月销按结算价格计算。</p>{monthly_sales_bar}{html_table(['月份','合同月销','结算月销（实际收入）'], monthly_sales_table_rows)}</section>
 <section class="panel"><h2>八、未来6个月月销预测</h2><p>预测区间为统计基准日 {fmt_date(as_of)} 后的 6 个自然月，基于当前在用的 {summary['active_line_count']} 条线路；与月销金额分析采用相同的按天口径，假设线路到期后按当前日均金额无间断续约，每月预测 = 日均金额 × 当月服务天数；开始时间晚于预测月份的线路不计入该月，当月开始的线路按开始日起的实际天数计入。</p>{forecast_sales_bar}{html_table(['预测月份','合同月销','结算月销（实际收入）'], forecast_table_rows)}</section>
 <section class="panel"><h2>九、线路平台分析</h2><div class="chart-wrap"><div class="chart-card"><h3>平台售出带宽饼图</h3>{platform_pie}</div><div class="chart-card"><h3>平台在售带宽饼图</h3>{platform_active_pie}</div></div>{html_table(['平台','全量线路数','全量带宽（Mbps）','带宽占比','在售线路数','在售带宽（Mbps）','已回收线路数','已回收带宽（Mbps）','销售额','销售额占比','实际收入（结算价格）','实际收入占比','加权销售单价','毛利率'], platform_table_rows)}<h3>UC 平台地域分析</h3><p>以下占比均以 UC 平台自身汇总为分母，用于识别 UC 平台的地域线路数量、带宽和收入结构。</p>{html_table(['地域','线路数','线路数占比','带宽（Mbps）','带宽占比','在售线路数','在售带宽（Mbps）','已回收线路数','已回收带宽（Mbps）','合同销售额','销售额占比','实际收入（结算价格）','实际收入占比'], uc_region_table_rows, 'uc-region-table') if uc_region_table_rows else '<p class="muted">暂无 UC 平台地域数据。</p>'}</section>
